@@ -69,6 +69,37 @@ it back afterwards. The tunnel will not start meanwhile; nothing else breaks.
 connected tunnel with no terminal typing, and `test/dependency.test.sh` asserts
 the post-install recheck actually clears the card.
 
+### Status: complete, 2026-08-27
+
+The defect is fixed by a bounded watch (3s interval, 100 ticks, stopping the
+instant the probe comes back clean); the manual Re-check button survives as the
+escape hatch. Tier 4 grew from 12 to 21 assertions covering it.
+
+Answers to the open questions:
+
+- **`/etc/openvpn/client` after a fresh install: yes, it exists.** The openvpn
+  package ships `/usr/lib/tmpfiles.d/openvpn.conf`, and pacman's
+  `21-systemd-tmpfiles.hook` runs `systemd-tmpfiles --create` post-transaction,
+  after `20-systemd-sysusers.hook` has created the `openvpn` user — so the
+  ownership is right too. `require_dir`'s fallback is therefore only reachable
+  when someone has deleted the directory. It was exercised anyway, unprivileged,
+  against the absent `/etc/wireguard`, and dies with a useful message.
+- **The card has now been rendered, and the whole path walked on real hardware**
+  — package removed with `pacman -R`, card shown at point of use, install
+  handed off, card cleared by itself, tunnel connected.
+
+Two things worth carrying forward:
+
+- **`pacman -R openvpn` does not touch imported profiles.** `pacman -Qo
+  /etc/openvpn/client` reports no owner and `pacman -Ql openvpn` lists nothing
+  under `/etc/openvpn`, so the directory (a tmpfiles creation) and its contents
+  survive. The unit file *is* package-owned and does disappear.
+- **Moving the binary aside is a weaker test than it looks.** `omarchy-pkg-add`
+  guards on `omarchy-pkg-missing`, which asks `pacman -Q` — the package
+  database, not the filesystem — so with the package still registered the
+  install is a silent no-op and nothing is exercised. Remove the package to
+  test this path for real.
+
 ---
 
 ## Phase 2 — WireGuard
@@ -111,6 +142,55 @@ simpler than OpenVPN's, with no side files in the common case.
 **Done when:** import, connect, and stats work for a real WireGuard profile;
 Tier 2 brings up a wg tunnel alongside the OpenVPN one; the architecture test
 still passes with two backends registered.
+
+### Also in this phase — surface why a tunnel actually failed
+
+Not WireGuard work, but scheduled here because it is the largest first-run gap
+left after Phase 1 and it costs no new dependency.
+
+Found on 2026-08-27 while QA'ing Phase 1. Removing the AUR package
+`openvpn-update-systemd-resolved`, which provides the `up` hook target
+`/usr/bin/update-systemd-resolved`, made a previously working profile fail. The
+journal said exactly why:
+
+```
+Options error: --up script fails with '/usr/bin/update-systemd-resolved': No such file or directory (errno=2)
+```
+
+The panel said only:
+
+```
+Job for openvpn-client@framework-omarchy.service failed because the control
+process exited with error code. See "systemctl status openvpn...
+```
+
+— systemd's job-failed boilerplate, truncated on screen, carrying none of the
+actual cause. `systemctl start` never prints the daemon's own stderr, so the
+information exists but is not where we are looking.
+
+**Why this matters more than it looks.** A profile that references a hook,
+certificate or credential file which is not present is the most likely import
+failure a stranger will hit: the `.ovpn` parses and imports cleanly, so nothing
+warns, and the failure only appears at connect time. Import already warns about
+hooks under `/home` (`ProtectHome`), but a hook pointing at a package-provided
+path that simply is not installed passes every check we make. Today the panel's
+answer is to go read the journal by hand, which the README has to document.
+
+Work:
+
+- On a failed start, read `journalctl -u <unit> -n 20 --no-pager -o cat` and
+  prefer the daemon's own lines over systemd's job wrapper. **Verified
+  unprivileged** — reading a system unit's journal needs no root here.
+- Extend `Model.cleanError()` to pick the useful line, with Tier 1 cases over
+  captured journal text.
+- Consider warning at *import* when a hook path does not exist on the system,
+  which catches this before the user ever tries to connect.
+- Separately, the panel's error row truncated the message regardless of its
+  content — check it for elision and give it room to wrap.
+
+**Done when:** a profile with a deliberately bogus `up` path is imported and
+started, and the panel names the missing file rather than systemd's boilerplate;
+Tier 2 asserts it.
 
 ---
 
@@ -220,10 +300,13 @@ asserts both, in a namespace, without touching the host's rules.
 The existing four tiers stay. Each phase adds to them rather than inventing a
 fifth:
 
-- **Tier 1** — WireGuard config parsing; credential redaction (assert no
-  secret ever appears in a command array or an error string).
-- **Tier 2** — a wg tunnel beside the OpenVPN one; the kill-switch assertions,
-  run inside the namespace so the host's rules are never touched.
+- **Tier 1** — WireGuard config parsing; `cleanError()` against captured
+  journal text; credential redaction (assert no secret ever appears in a
+  command array or an error string).
+- **Tier 2** — a wg tunnel beside the OpenVPN one; a profile with a bogus `up`
+  path, asserting the panel reports the missing file and not systemd's
+  boilerplate; the kill-switch assertions, run inside the namespace so the
+  host's rules are never touched.
 - **Tier 3** — `state` JSON grows kill-switch status and credential presence
   (presence only, never the secret).
 - **Tier 4** — the post-install recheck; and the dependency matrix gains
@@ -240,7 +323,8 @@ relevant log on failure.
 - [ ] `wg-quick@.service`'s sandboxing directives (`ProtectHome`?)
 - [ ] `/etc/wireguard` mode and owner as shipped
 - [ ] `wg show` unprivileged?
-- [ ] `/etc/openvpn/client` exists right after a fresh install
+- [x] `/etc/openvpn/client` exists right after a fresh install — **yes**, via
+      the package's tmpfiles and pacman's post-transaction hook (Phase 1)
 - [ ] nftables coexistence with Docker and NetworkManager
 - [ ] endpoint-permitting rules do not deadlock the tunnel handshake
 
