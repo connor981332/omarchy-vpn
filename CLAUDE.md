@@ -96,6 +96,19 @@ Plugins run **inside** the shell process, unsandboxed, with the user's
 permissions. Never start a second Quickshell process. Never add symlinks to
 this folder — validation rejects them.
 
+**The widget is mounted once per monitor**, and each copy runs its own
+`Service` with its own poll. Harmless for reads; not harmless for a privileged
+write, so the kill switch elects one copy (`killswitchOwner` in `Panel.qml`)
+before it will arm by itself. The only per-instance identity available is
+QML's `Screen` attached property — `bar` is the per-monitor Bar object, but
+nothing it exposes names its own output (`slotScreenName` is a *function*
+taking a slot, and `bar.screen` is undefined).
+
+Also note `journalctl --user -u omarchy-shell` matches nothing: there is no
+such unit. The process is a bare `quickshell` under
+`wayland-wm@hyprland.desktop.service`, and its output is found with
+`journalctl --user | grep omarchy-shell`.
+
 `Panel.qml` derives from `Panel` in `qs.Ui`, which supplies
 `open()`/`close()`/`toggle()`, `opened`, `controller`, `barForeground`, and
 `setting(name, fallback)`. The base type is imported from the module even
@@ -350,6 +363,13 @@ a marker (`ran:`) so "found nothing" and "never ran" cannot be confused.
   "Unexpected token `void`" — on the shipped first-party plugins too.
   `validate.sh` and `run-tests.sh` skip it deliberately. Other QML files lint
   clean; keep them that way.
+- **The screen flashing while editing files here.** The shell watches this
+  directory and logs `Local plugin changed, reloading: connor.vpn` on *every*
+  write, re-rendering the bar each time — 190 of them in one three-hour
+  session. It is the edits, not a crash loop. Note that this reload does
+  **not** replace the mounted QML (verified: a new `stateJson()` field was
+  still absent ten seconds after the write), so it is pure visual churn.
+  `omarchy restart shell` is still required.
 - **`IpcHandler ... will not be used because another handler is registered for
   target connor.vpn`** in the journal. The bar instantiates the widget once per
   monitor (three here), so only the first handler binds. Every first-party panel

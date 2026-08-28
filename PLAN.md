@@ -674,6 +674,17 @@ is how the missing loopback assertion surfaced: the rule carries no counter,
 so it could have been deleted outright with every other assertion still
 green.
 
+**Two defects found during the UI walkthrough**, neither of them in the rules.
+A `StatRow` dereferenced `vpn.activeTunnel.device` without a guard — `visible:
+false` does not stop a binding evaluating, so every poll with no tunnel up
+logged a TypeError. And the widget is mounted **once per monitor**, each with
+its own poll, so three monitors would have fired three `pkexec` calls for one
+tunnel coming up; one copy is now elected via QML's `Screen` attached property
+(the only per-instance identity there is — `bar` exposes nothing that names
+its own output). The election gates the automatic path only, so the toggle
+still works from whichever copy the user clicked, and both halves are
+mechanically checked.
+
 **Still human:** the polkit prompt from the toggle, and one real-world
 connection with a full-tunnel commercial profile — which is also the last look
 at whether NetworkManager touches a tunnel that owns the default route.

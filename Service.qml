@@ -905,8 +905,13 @@ Item {
   // arms: a tunnel that goes down on its own must leave the rules standing,
   // and the only paths that disarm are the user asking and a deliberate
   // disconnect.
+  // Set false on every copy of the widget but one — see Panel.qml's
+  // killswitchOwner. Without it, three monitors mean three pkexec calls for
+  // one tunnel coming up.
+  property bool killswitchOwner: true
+
   function _maintainKillswitch() {
-    if (killswitchProcess.running || !killSwitchEnabled) return
+    if (!killswitchOwner || killswitchProcess.running || !killSwitchEnabled) return
     var tunnel = activeTunnel
     if (!tunnel || String(tunnel.device || "") === "") return
     // Stale means the rules name a device that is no longer the tunnel's —
@@ -964,6 +969,9 @@ Item {
         port: killswitch ? killswitch.port : "",
         proto: killswitch ? killswitch.proto : "",
         enabled: killSwitchEnabled,
+        // Which copy of the widget arms automatically. One bar per monitor
+        // means one Service per monitor, and only one of them may fire pkexec.
+        owner: killswitchOwner,
         text: killswitchText
       },
       backends: []

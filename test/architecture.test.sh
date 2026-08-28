@@ -333,6 +333,25 @@ else
   check "nothing writes /etc/nftables.conf, so a reboot always recovers" 0
 fi
 
+# The bar mounts this widget once per monitor, each with its own Service and
+# its own poll. Only one may fire the privileged arm, or three monitors mean
+# three pkexec calls for one tunnel coming up.
+if grep -q 'killswitchOwner' Panel.qml && grep -q 'killswitchOwner' Service.qml; then
+  check "only one copy of the widget arms automatically" 0
+else
+  check "only one copy of the widget arms automatically" 1 \
+    "the per-monitor election is missing from Panel.qml or Service.qml"
+fi
+
+# The election gates the AUTOMATIC path only. Gating the toggle as well would
+# make the button dead on every monitor but one.
+if awk '/^  function toggleKillswitch\(\)/,/^  }$/' Service.qml | grep -q 'killswitchOwner'; then
+  check "the manual toggle is not gated by the election" 1 \
+    "$(awk '/^  function toggleKillswitch\(\)/,/^  }$/' Service.qml)"
+else
+  check "the manual toggle is not gated by the election" 0
+fi
+
 echo "# no symlinks — plugin validation rejects them"
 links="$(find . -type l -not -path './.git/*' 2>/dev/null || true)"
 if [[ -z $links ]]; then

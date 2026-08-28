@@ -104,6 +104,25 @@ Panel {
       root.bar.shell.updateEntryInline(root.moduleName, entry)
   }
 
+  // The bar instantiates this widget once per monitor, and each copy runs its
+  // own Service with its own poll. Harmless for reads; not harmless for a
+  // privileged write — three instances noticing the same unarmed tunnel on the
+  // same tick would each fire their own `pkexec`. One instance is elected to
+  // do the automatic arming.
+  //
+  // Falls back to true when there is no bar or no screen to compare, so a
+  // bare instantiation still behaves. Only the AUTOMATIC path is gated:
+  // clicking the toggle acts from whichever instance the user clicked.
+  // `Screen` is QML's attached property for the screen this item's window is
+  // on, which is the only per-instance identity the widget has — `bar` is the
+  // per-monitor Bar, but nothing it exposes names its own output.
+  //
+  // Falls back to true when there is no screen to compare, so a bare
+  // instantiation still behaves. A wrong answer here would be silent: every
+  // copy declining to arm means the kill switch simply never comes on.
+  readonly property bool killswitchOwner: Quickshell.screens.length === 0
+    || Screen.name === "" || Screen.name === Quickshell.screens[0].name
+
   // The preference and the rules move together. Persisting alone would leave
   // the machine unprotected until the next connect; arming alone would come
   // undone on the next one. Neither half on its own is what the switch was
@@ -145,6 +164,8 @@ Panel {
     id: vpn
     settings: root.settings
     backends: backends.all
+    // Only one copy of the widget may arm the kill switch by itself.
+    killswitchOwner: root.killswitchOwner
     // Expensive probes — routes, resolvers, exit IP — only run while the
     // popup is actually open.
     detailed: root.opened
@@ -414,9 +435,12 @@ Panel {
 
             StatRow {
               label: "Default route"
-              value: stats.telemetry.defaultRoute
-                ? "via " + vpn.activeTunnel.device
-                : "not via " + vpn.activeTunnel.device
+              // Guarded even though the Column above is invisible without an
+              // active tunnel: `visible: false` does not stop a binding being
+              // evaluated, so the moment a tunnel goes down this dereferences
+              // null and QML logs a TypeError for every row that does it.
+              value: !vpn.activeTunnel ? ""
+                : (stats.telemetry.defaultRoute ? "via " : "not via ") + vpn.activeTunnel.device
               // The silent failure mode: the link is up but traffic is not
               // using it. Worth shouting about.
               alert: !stats.telemetry.defaultRoute
