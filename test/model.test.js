@@ -438,6 +438,22 @@ t.test("says nothing rather than something wrong", () => {
   ].join("\n")), "")
 })
 
+t.test("a shell transcript is not mistaken for the reason", () => {
+  // One tunnel helper echoes every command it runs as `[#] ...`, and on
+  // failure it tears the interface down again — so the LAST line is its
+  // cleanup. Reporting that would name the teardown as the cause.
+  const wg = [
+    "Starting WireGuard via wg-quick(8) for demo...",
+    "[#] ip link add dev demo type wireguard",
+    "[#] resolvconf -a demo -m 0 -x",
+    "/usr/bin/wg-quick: line 32: resolvconf: command not found",
+    "[#] ip link delete dev demo",
+    "wg-quick@demo.service: Main process exited, code=exited, status=127",
+    "Failed to start WireGuard via wg-quick(8) for demo."
+  ].join("\n")
+  t.eq(M.journalError(wg), "/usr/bin/wg-quick: line 32: resolvconf: command not found")
+})
+
 t.test("an unrecognised failure falls back to the last thing said", () => {
   t.eq(M.journalError([
     "Starting OpenVPN tunnel for x...",

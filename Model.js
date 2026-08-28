@@ -469,6 +469,10 @@ var _JOURNAL_NOISE = [
   /^Options error: Unrecognized option or missing or extra parameter\(s\) in \[PUSH-OPTIONS\]/i,
   /^(net_|OPTIONS IMPORT|PUSH:|MANAGEMENT:|VERIFY OK|Validating|Attempting|Outgoing|Incoming|Control Channel|Data Channel|Peer Connection Initiated|Timers:|Protocol options:|library versions|Initialization Sequence)/,
   /^(WARNING|NOTE|DEPRECATED OPTION):/,
+  // A shell transcript. One tunnel helper echoes every command it runs with
+  // this prefix, so the last line before a failure is its cleanup rather than
+  // its reason — reporting that would name the teardown as the cause.
+  /^\[#\] /,
   /^SIG(TERM|HUP|INT|USR1)/,
   /^event_wait /
 ]
@@ -480,6 +484,9 @@ var _JOURNAL_STRONG = [
   /AUTH_FAILED|auth-failure/i,
   /^Options error:/i,
   /(No such file or directory|Permission denied|Cannot open|Cannot resolve|Cannot load)/i,
+  // A helper the tunnel needs that is not installed. The line names the
+  // missing command, which is the whole answer.
+  /: command not found/i,
   /^(TLS Error|RESOLVE:|Could not|Unable to)/i,
   /Exiting due to fatal error/i
 ]
