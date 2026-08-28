@@ -69,7 +69,7 @@ it back afterwards. The tunnel will not start meanwhile; nothing else breaks.
 connected tunnel with no terminal typing, and `test/dependency.test.sh` asserts
 the post-install recheck actually clears the card.
 
-### Status: complete, 2026-08-27
+### Status: built 2026-08-27, awaiting the Tier 2 run
 
 The defect is fixed by a bounded watch (3s interval, 100 ticks, stopping the
 instant the probe comes back clean); the manual Re-check button survives as the
@@ -307,7 +307,7 @@ Work:
 started, and the panel names the missing file rather than systemd's boilerplate;
 Tier 2 asserts it.
 
-#### Status: built 2026-08-27, awaiting the Tier 2 run
+#### Status: complete, 2026-08-27
 
 - `Model.journalError()` scopes the journal to the attempt that just failed
   (systemd's `Starting …` line is the boundary — the journal keeps every
@@ -408,7 +408,7 @@ which the keyring cannot.
 **Done when:** a profile using `auth-user-pass` imports, prompts once, connects,
 and reconnects later without prompting again.
 
-### Status: built 2026-08-27, awaiting the Tier 2 run
+### Status: built 2026-08-27 — Tier 2 re-run pending after the harness fix
 
 The design above is what shipped, with no reopened decisions.
 
@@ -471,6 +471,25 @@ processes *is* the security argument for choosing this over the keyring.
 
 **Still human:** entering credentials through the panel, and the polkit prompt
 that follows — the harness drives the helper directly and never touches QML.
+Walked through on 2026-08-27: both fields, the polkit prompt, the saved state,
+Change and Remove all behave.
+
+**Tier 2 ran red the first time, and the plugin was not the reason.**
+`openvpn-client@.service` is `Type=notify` and OpenVPN signals `READY` before
+the TLS handshake, so `systemctl start` returns **success with a wrong
+password** — the rejection is a fatal error a second or two later. The
+assertion had read the start's exit status, and had then read the journal
+before `AUTH_FAILED` was in it, so the second failure (`journalError()`
+answering with OpenVPN's version banner) was the same bug seen twice: nothing
+had happened yet.
+
+The fix is that the two cases are separated by what the unit does *after* the
+exchange, never by how `start` exited. `wait_unit_gone` polls for the unit to
+leave active; `wait_unit_connected` waits for `Initialization Sequence
+Completed`, which is the only line that means the credentials were accepted.
+The success-side check was strengthened at the same time — it had asserted
+`is-active`, which the wrong-password run also satisfied for its first two
+seconds, and so proved less than it appeared to.
 
 ---
 

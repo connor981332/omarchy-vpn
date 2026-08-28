@@ -442,6 +442,37 @@ check "the broken profile was removed" $?
 
 # ------------------------------------------------------------ credentials
 
+# `systemctl start` on a Type=notify unit returns as soon as OpenVPN signals
+# READY, and OpenVPN signals it before the TLS handshake — so it returns
+# success while the server has not yet looked at the password at all. A wrong
+# password is a fatal error a second or two later. What separates the two
+# cases is therefore whether the unit is still up once the exchange has
+# happened, never the exit status of `start`.
+wait_unit_gone() {
+  local unit="$1" deadline=$((SECONDS + ${2:-20}))
+  while ((SECONDS < deadline)); do
+    systemctl is-active --quiet "$unit" || return 0
+    sleep 1
+  done
+  return 1
+}
+
+# The success side of the same coin: "active" on its own only means the
+# process launched. OpenVPN says "Initialization Sequence Completed" when the
+# tunnel is actually up, which is the only line that means the credentials
+# were accepted.
+wait_unit_connected() {
+  local unit="$1" since="$2" deadline=$((SECONDS + ${3:-20}))
+  while ((SECONDS < deadline)); do
+    journalctl -u "$unit" --since "$since" --no-pager -o cat 2>/dev/null \
+      | grep -q "Initialization Sequence Completed" && return 0
+    systemctl is-active --quiet "$unit" || return 1
+    sleep 1
+  done
+  return 1
+}
+
+
 # Phase 3. A profile with `auth-user-pass` and no file is the shape almost
 # every commercial provider ships, and it used to be refused at import: the
 # directive means "prompt on the terminal" and the service has no terminal.
@@ -575,9 +606,13 @@ else
   pass=$((pass + 1))
 fi
 
-# A wrong password, through a server that actually checks it.
+# A wrong password, through a server that actually checks it. The start
+# itself succeeds — see wait_unit_gone above — so the assertion is that the
+# unit does not survive the handshake.
 systemctl start "$AUTH_UNIT" >/dev/null 2>&1
-check "a wrong password does not connect" $(( $? != 0 ? 0 : 1 ))
+wait_unit_gone "$AUTH_UNIT" 20
+check "a wrong password does not connect" $? \
+  "$(journalctl -u "$AUTH_UNIT" -n 25 --no-pager -o cat 2>&1)"
 
 journalctl -u "$AUTH_UNIT" -n 40 --no-pager -o cat > "$WORK/journal-auth.txt" 2>&1
 AUTH_SAYS="$(cd "$ROOT" && "$NODE" -e '
@@ -602,20 +637,22 @@ check "credentials can be replaced" $?
 [[ "$(wc -l < "$AUTH_FILE")" == "2" ]]
 check "replacing them overwrites rather than appends" $? "$(wc -l < "$AUTH_FILE")"
 
+AUTH_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl start "$AUTH_UNIT" >/dev/null 2>&1
+wait_unit_connected "$AUTH_UNIT" "$AUTH_SINCE" 20
 check "the right password connects" $? \
-  "$(journalctl -u "$AUTH_UNIT" -n 25 --no-pager -o cat 2>&1)"
+  "$(journalctl -u "$AUTH_UNIT" --since "$AUTH_SINCE" --no-pager -o cat 2>&1)"
 
 systemctl is-active --quiet "$AUTH_UNIT"
 check "the credential tunnel reached active" $?
 
 # "reconnects later without prompting again" — the file is on disk and the
 # daemon reads it itself, so a restart with no UI involved must work.
+AUTH_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl restart "$AUTH_UNIT" >/dev/null 2>&1
-sleep 3
-systemctl is-active --quiet "$AUTH_UNIT"
+wait_unit_connected "$AUTH_UNIT" "$AUTH_SINCE" 20
 check "it reconnects from the stored file with nothing to prompt" $? \
-  "$(journalctl -u "$AUTH_UNIT" -n 25 --no-pager -o cat 2>&1)"
+  "$(journalctl -u "$AUTH_UNIT" --since "$AUTH_SINCE" --no-pager -o cat 2>&1)"
 
 systemctl stop "$AUTH_UNIT" >/dev/null 2>&1
 

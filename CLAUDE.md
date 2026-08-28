@@ -271,6 +271,17 @@ Two refinements found while building the WireGuard harness section:
 Still needs a human: visual polish, the polkit prompt appearing from the QML
 plugin, and a real-world connection as a final sanity check.
 
+**`systemctl start` succeeding does not mean the tunnel came up.**
+`openvpn-client@.service` is `Type=notify`, and OpenVPN signals `READY` before
+the TLS handshake — so `start` returns 0 with a *wrong password*, and the
+rejection lands a second or two later. Any assertion about whether a
+connection actually worked has to watch what the unit does after the exchange:
+poll for it to leave active on the failure side, and wait for OpenVPN's
+`Initialization Sequence Completed` on the success side. `is-active` right
+after `start` is true in both cases. The same timing trap makes a journal read
+too early answer with the version banner, which looks like a parser bug and is
+not.
+
 Three harness lessons worth keeping, each of which cost a debugging round:
 generated certs need `keyUsage` as well as `extendedKeyUsage` or
 `remote-cert-tls server` fails with a misleading trust error; a `check`
