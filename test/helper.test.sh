@@ -125,7 +125,8 @@ STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/__test-hooks"
 
 out="$(printf 'client\n' | XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" \
   bash "$STAGER" "$STAGING" "__test-hooks.conf" \
-  --hook /usr/bin/env --hook /usr/bin/definitely-not-installed 2>&1)"
+  --hook /usr/bin/env --hook /usr/bin/definitely-not-installed \
+  --command sh --command definitely-not-a-command 2>&1)"
 code=$?
 rm -rf -- "$STAGING"
 
@@ -165,6 +166,26 @@ if [[ $code -eq 0 ]]; then
   pass=$((pass + 1))
 else
   echo "not ok - a missing hook aborted the import"
+  fail=$((fail + 1))
+fi
+
+# --command is the PATH-resolved twin of --hook, used for the wg-quick DNS
+# trap: `DNS =` is applied with resolvconf, which comes from an optional
+# dependency that is not in Omarchy's base.
+if [[ $out == *"missing-command: definitely-not-a-command"* ]]; then
+  echo "ok - reports a command that is not on PATH"
+  pass=$((pass + 1))
+else
+  echo "not ok - reports a command that is not on PATH"
+  echo "$out" | sed 's/^/  /'
+  fail=$((fail + 1))
+fi
+
+if [[ $out != *"missing-command: sh"* ]]; then
+  echo "ok - stays quiet about a command that is present"
+  pass=$((pass + 1))
+else
+  echo "not ok - warned about a command that exists"
   fail=$((fail + 1))
 fi
 

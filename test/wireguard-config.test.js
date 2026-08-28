@@ -166,4 +166,32 @@ t.test("every hook key is recognised", () => {
   t.eq(C.plan(cfg, { name: "wg0" }).hookTargets.length, 4)
 })
 
+t.suite("the DNS trap")
+
+// wg-quick applies `DNS =` by shelling out to resolvconf, which on Arch comes
+// from openresolv -- an OPTIONAL dependency of wireguard-tools, and not in
+// Omarchy's base. Reproduced against real wg-quick: it creates the interface,
+// fails with `resolvconf: command not found`, deletes the interface again and
+// exits 127. Nearly every commercial profile sets DNS.
+// PROFILE already sets DNS, because that is what a commercial profile looks
+// like -- which is exactly why this trap is worth catching.
+t.test("a profile setting DNS asks for resolvconf to be checked", () => {
+  const p = C.plan(PROFILE, { name: "wg0" })
+  t.eq(p.commandChecks.length, 1)
+  t.eq(p.commandChecks[0].command, "resolvconf")
+  t.ok(p.commandChecks[0].warning.indexOf("openresolv") !== -1, "and names the package")
+})
+
+t.test("a profile without DNS asks for nothing", () => {
+  // The check must not fire for every profile, or the warning stops meaning
+  // anything and a working import grows a scary message.
+  const noDns = PROFILE.split("\n").filter(l => l.indexOf("DNS") !== 0).join("\n")
+  t.eq(C.plan(noDns, { name: "wg0" }).commandChecks.length, 0)
+})
+
+t.test("the DNS check is not an import error", () => {
+  // openresolv may be installed later; the profile itself is valid.
+  t.eq(C.plan(PROFILE, { name: "wg0" }).errors.length, 0)
+})
+
 t.done()

@@ -568,6 +568,10 @@ Item {
     // can see the filesystem the pure config parser cannot.
     var hooks = plan.hookTargets || []
     for (var h = 0; h < hooks.length; h++) command.push("--hook", hooks[h])
+    // Same look-before-installing, for a command resolved through PATH. The
+    // backend supplies the name and the sentence; the service only asks.
+    var checks = plan.commandChecks || []
+    for (var c = 0; c < checks.length; c++) command.push("--command", checks[c].command)
 
     actionStatus = "Preparing " + _importName + "…"
     importProcess.command = command
@@ -580,12 +584,20 @@ Item {
   function _warnAboutMissingHooks(output) {
     var lines = String(output).split(/\r?\n/)
     var next = warnings.slice()
+    var checks = (_importPlan && _importPlan.commandChecks) || []
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim()
-      if (line.indexOf("missing-hook: ") !== 0) continue
-      var path = line.substring("missing-hook: ".length)
-      next.push("This profile runs `" + path + "`, which is not on this system. "
-        + "The tunnel will fail to start until whatever provides it is installed.")
+      if (line.indexOf("missing-hook: ") === 0) {
+        var path = line.substring("missing-hook: ".length)
+        next.push("This profile runs `" + path + "`, which is not on this system. "
+          + "The tunnel will fail to start until whatever provides it is installed.")
+        continue
+      }
+      if (line.indexOf("missing-command: ") !== 0) continue
+      var name = line.substring("missing-command: ".length)
+      for (var c = 0; c < checks.length; c++) {
+        if (checks[c].command === name) { next.push(checks[c].warning); break }
+      }
     }
     // Reassign: mutating in place fires no change notification.
     if (next.length !== warnings.length) warnings = next

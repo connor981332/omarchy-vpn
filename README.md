@@ -35,6 +35,18 @@ sudo pacman -S --needed wireguard-tools  # for WireGuard profiles
 
 ### Optional
 
+`openresolv` — only for a **WireGuard** profile with a `DNS =` line. `wg-quick`
+applies that setting by shelling out to `resolvconf`, which on Arch comes from
+`openresolv`; it is an *optional* dependency of `wireguard-tools` and is not
+installed by default. Without it `wg-quick` brings the interface up, fails with
+`resolvconf: command not found`, tears the interface back down and exits 127.
+Most commercial WireGuard profiles set `DNS`, so this is worth knowing —
+importing such a profile warns you about it before anything is installed.
+
+```bash
+sudo pacman -S --needed openresolv
+```
+
 `curl` — only if you turn on **Show exit IP** (off by default; see Settings).
 
 ## Install

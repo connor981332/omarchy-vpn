@@ -197,12 +197,34 @@ backend property; truncation never re-exposes a trailing separator, which
 directions, plus a check that every registered backend declares the four
 fields the card needs).
 
-**Not done, and the reason this is not finished:** no WireGuard tunnel has
-ever been brought up. The parser is tested against configs, not against
-`wg-quick`, and no profile has been imported end to end. The Tier 2 harness
-still builds only an OpenVPN tunnel. Until that runs, this backend is
-plausible rather than proven — the same standard the OpenVPN side was held
-to.
+**Tier 2 ran green on 2026-08-27: 57/57**, including a real WireGuard tunnel
+through the stock `wg-quick@` unit — installed by the privileged helper,
+started by systemd, carrying traffic, with the byte counters and both parsers
+read by the same protocol-agnostic code the OpenVPN side uses.
+
+Two findings from that work:
+
+- **The DNS trap, and it is a big one.** `wg-quick` applies a `DNS =` line by
+  shelling out to `resolvconf`, which on Arch comes from `openresolv` — an
+  **optional** dependency of `wireguard-tools`, absent from Omarchy's base and
+  not installed here. Reproduced against real `wg-quick`: it creates the
+  interface, fails `resolvconf: command not found`, deletes the interface and
+  exits 127. Nearly every commercial WireGuard profile sets `DNS`, so this was
+  very likely to be the first thing a stranger hit. Import now warns, using
+  the same look-before-installing machinery as the hook check —
+  `plan.commandChecks` carries the command *and* the sentence, because naming
+  a package is backend knowledge and `Service.qml` may not do it.
+- **`%I` unescapes and `%i` does not, visibly.** The stock unit's
+  `Description=… for %I` renders `harness-wg` as `harness/wg`, because `-`
+  unescapes to `/`. `ExecStart` uses `%i`, which does not. This is the
+  escaping asymmetry `unitFor()` is built around, showing up in the wild: had
+  the instance been escaped, `%i` would have expanded to `harness\x2dwg` and
+  `wg-quick` would have looked for a config that does not exist.
+
+**Still not done:** no WireGuard profile has been imported through the *UI* —
+the harness drives `Config.plan` → `stage-profile` → `install-profile`
+directly and never touches the QML layer, so the panel has never rendered a
+WireGuard row. That is a human check, like the polkit prompt.
 
 ### Also in this phase — surface why a tunnel actually failed
 

@@ -150,6 +150,10 @@ function plan(text, opts) {
   var errors = validate(parsed)
   var warnings = []
   var hookTargets = []
+  // Commands the profile will need at connect time that may not be installed.
+  // The warning text lives here, with the protocol, rather than in the service
+  // — naming a package is backend knowledge.
+  var commandChecks = []
 
   if (name.length > MAX_NAME_LENGTH) {
     errors.push("The interface name may be at most " + MAX_NAME_LENGTH
@@ -162,6 +166,21 @@ function plan(text, opts) {
   if (iface && valueOf(iface, "Address") === "") {
     warnings.push("The [Interface] section has no Address, so the tunnel will come up "
       + "with no IP and carry no traffic.")
+  }
+
+  // The DNS trap. wg-quick applies `DNS =` by shelling out to `resolvconf`,
+  // which on Arch comes from openresolv — an *optional* dependency of
+  // wireguard-tools and not in Omarchy's base. Without it wg-quick fails with
+  // `resolvconf: command not found`, deletes the interface it just made, and
+  // exits 127. Nearly every commercial WireGuard profile sets DNS, so this is
+  // the most likely way a stranger's first WireGuard tunnel fails.
+  if (iface && valueOf(iface, "DNS") !== "") {
+    commandChecks.push({
+      command: "resolvconf",
+      warning: "This profile sets DNS, which wg-quick applies with `resolvconf` — "
+        + "and that command is not installed. Install the openresolv package, or "
+        + "remove the DNS line, or the tunnel will fail to start."
+    })
   }
 
   var peers = sectionsNamed(parsed, "Peer")
@@ -202,6 +221,7 @@ function plan(text, opts) {
     content: parsed.text.replace(/\n+$/, "") + "\n",
     assets: [],
     hookTargets: hookTargets,
+    commandChecks: commandChecks,
     warnings: warnings,
     errors: errors
   }
