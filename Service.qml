@@ -237,13 +237,10 @@ Item {
       var tunnel = tunnels[i]
       var block = blocks[tunnel.unit] || {}
       since[tunnel.id] = block.ActiveEnterTimestampMonotonic || "0"
-      next.push(Model.makeTunnel({
-        name: tunnel.name,
-        protocol: tunnel.protocol,
-        unit: tunnel.unit,
-        endpoint: tunnel.endpoint,
-        state: Model.stateFromIsActive(block.ActiveState || ""),
-        device: tunnel.device
+      // updateTunnel, not makeTunnel: the poll changes one field and must
+      // carry the rest forward untouched.
+      next.push(Model.updateTunnel(tunnel, {
+        state: Model.stateFromIsActive(block.ActiveState || "")
       }))
     }
     tunnels = next
@@ -323,11 +320,7 @@ Item {
       if (tunnel.state !== "up" && tunnel.state !== "activating") device = ""
       if (device !== "") assignments[tunnel.id] = device
 
-      next.push(Model.makeTunnel({
-        name: tunnel.name,
-        protocol: tunnel.protocol,
-        unit: tunnel.unit,
-        endpoint: tunnel.endpoint,
+      next.push(Model.updateTunnel(tunnel, {
         // A unit can report active while its device never appeared — the
         // half-up tunnel. Until the device exists this is still activating.
         state: Model.reconcileState(tunnel.state, device !== ""),

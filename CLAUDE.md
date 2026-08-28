@@ -145,6 +145,17 @@ omarchy-install-app "Name" pkg…   # themed floating terminal, runs omarchy-pkg
   `isActive(x)` helper in the UI, never a raw `state` field.
 - **Reassign, don't mutate.** Object and array properties are replaced
   wholesale — mutating in place does not fire change notifications in QML.
+  The corollary is a trap: the poll replaces the whole tunnel list on every
+  tick, so a rebuild from an explicit field list silently drops any field the
+  caller forgot to restate. `Model.makeTunnel()` is therefore only for
+  `rebuild()`, which genuinely builds from the index; every other path uses
+  `Model.updateTunnel(tunnel, changes)`, which carries the rest forward. This
+  is mechanically checked — a field that survives import and vanishes seconds
+  later is nearly impossible to read as a *state* bug.
+- **`instanceof Array` is unreliable across contexts.** `Model.js` and each
+  `Config.js` are `.pragma library`, each with its own JavaScript context, so
+  an array built in a QML component is not an instance of *that* file's
+  `Array`. Duck-type instead (and exclude strings, which have a length too).
 - **Theme through the bar.** Use `root.foreground` / `dim` / `urgent` /
   `fontFamily` and `Style.space(n)`, never literal colors or pixel values. The
   guards (`bar ? bar.foreground : Color.foreground`) matter: the bar-widget

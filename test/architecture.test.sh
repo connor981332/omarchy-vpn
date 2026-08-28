@@ -138,6 +138,27 @@ else
   check "a FileView is cleared before being handed the same path again" 0
 fi
 
+echo "# the poll may not rebuild a tunnel from scratch"
+# makeTunnel() takes an explicit field list, so calling it on the poll path
+# drops every field the caller forgot to restate. That is not hypothetical: it
+# silently removed a profile's requirements on the first tick after import.
+# Only rebuild(), which genuinely constructs tunnels from the index, may use
+# it; everything else carries forward with updateTunnel().
+makers="$(grep -n 'Model.makeTunnel(' Service.qml)"
+bad_makers=""
+while IFS= read -r line; do
+  [[ -z $line ]] && continue
+  lineno="${line%%:*}"
+  fn="$(head -n "$lineno" Service.qml | grep -oE '^  function [A-Za-z_]+' | tail -1 | awk '{print $2}')"
+  [[ $fn == "rebuild" ]] || bad_makers+="  line $lineno is inside ${fn:-<top level>}"$'\n'
+done <<< "$makers"
+
+if [[ -z $bad_makers ]]; then
+  check "only rebuild() constructs a tunnel from scratch" 0
+else
+  check "only rebuild() constructs a tunnel from scratch" 1 "$bad_makers"
+fi
+
 echo "# no symlinks — plugin validation rejects them"
 links="$(find . -type l -not -path './.git/*' 2>/dev/null || true)"
 if [[ -z $links ]]; then

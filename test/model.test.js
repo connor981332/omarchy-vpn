@@ -172,6 +172,29 @@ t.test("a tunnel carries what its profile needs beyond the backend", () => {
        "a hand-edited index cannot inject a non-array")
 })
 
+t.test("a poll tick carries every field it did not change", () => {
+  // The bug this pins: the poll rebuilt each tunnel from an explicit field
+  // list, so anything not restated was dropped. A profile's requirements were
+  // recorded at import, correct on disk, and gone from the panel fifteen
+  // seconds later when the first poll landed.
+  const before = M.makeTunnel({
+    name: "a", protocol: "p", unit: "u", endpoint: "host:1",
+    requires: [{ command: "resolvconf", packageName: "openresolv" }]
+  })
+  const after = M.updateTunnel(before, { state: "up" })
+  t.eq(after.state, "up", "the change is applied")
+  t.eq(after.requires.length, 1, "and the requirement survives")
+  t.eq(after.endpoint, "host:1")
+  t.eq(after.unit, "u")
+  t.eq(after.id, before.id)
+})
+
+t.test("updateTunnel does not mutate the tunnel it is given", () => {
+  const before = M.makeTunnel({ name: "a", protocol: "p", state: "down" })
+  M.updateTunnel(before, { state: "up" })
+  t.eq(before.state, "down")
+})
+
 t.suite("state")
 
 t.test("maps systemctl is-active vocabulary", () => {

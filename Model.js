@@ -145,9 +145,37 @@ function makeTunnel(fields) {
     path: String(f.path || ""),
     // Packages this profile needs beyond its backend. Carried on the tunnel so
     // the panel can keep saying so for as long as the profile is installed.
-    requires: f.requires instanceof Array ? f.requires : [],
+    // NOT `instanceof Array`: this file is a .pragma library with its own
+    // JavaScript context, and an array built in a QML component is not an
+    // instance of *this* context's Array. Duck-typed, with strings excluded
+    // because they have a length too.
+    requires: _asList(f.requires),
     telemetry: f.telemetry || emptyTelemetry()
   }
+}
+
+// Rebuilds a tunnel with some fields replaced and everything else carried
+// forward.
+//
+// The poll rebuilds the whole list on every tick. Doing that with
+// makeTunnel() and a fresh field list means any field the caller forgets to
+// restate is silently dropped — which is exactly what happened to a profile's
+// requirements: recorded at import, correct on disk, and gone from the panel
+// fifteen seconds later when the first poll landed. Restating a field list in
+// three places is the bug; this exists so it is stated once.
+function updateTunnel(tunnel, changes) {
+  var fields = {}
+  var key
+  for (key in (tunnel || {})) fields[key] = tunnel[key]
+  for (key in (changes || {})) fields[key] = changes[key]
+  return makeTunnel(fields)
+}
+
+function _asList(value) {
+  if (!value || typeof value === "string" || typeof value.length !== "number") return []
+  var out = []
+  for (var i = 0; i < value.length; i++) out.push(value[i])
+  return out
 }
 
 function emptyTelemetry() {
