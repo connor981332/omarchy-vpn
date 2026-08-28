@@ -107,16 +107,38 @@ Two things worth carrying forward:
 **Goal:** deliver product goal #1 ("works out of the box with OpenVPN and
 WireGuard") and prove the abstraction was worth building.
 
-### Verify before building
-- [ ] `wg-quick@.service` ships with `wireguard-tools` (`pacman -Fy` first).
-- [ ] Does `wg-quick@.service` set `ProtectHome`? If it does not, path
-      rewriting is not strictly required — but do it anyway, for one import
-      path rather than two.
-- [ ] What mode/owner does `wireguard-tools` give `/etc/wireguard`?
-      `install-profile` already claims `root:root`, untested.
-- [ ] **Does `wg show` need root?** If it does, last-handshake age is not
-      available unprivileged and that Tier 3 stat is dropped rather than
-      bought with a polkit prompt.
+### Verified 2026-08-27, with the package installed
+
+- [x] **`wg-quick@.service` ships with `wireguard-tools`** —
+      `/usr/lib/systemd/system/wg-quick@.service`, alongside `wg-quick.target`.
+- [x] **It sets no sandboxing directives at all** — no `ProtectHome`, no
+      `Protect*` of any kind. So constraint 1 does not apply to WireGuard and
+      path rewriting is not required. Do it anyway: one import path is worth
+      more than the rewrite costs, and a config that works only because the
+      unit happens not to sandbox is a trap for the next systemd release.
+- [x] **`/etc/wireguard` is `0700 root:root`** and is shipped *by the package
+      itself*, not by tmpfiles — so it exists the moment the package does, and
+      `install-profile`'s `root:root` claim is correct. It is **less**
+      reachable than OpenVPN's `0750 openvpn:network`, so constraint 2 holds
+      here too and enumeration stays privileged.
+- [x] **`wg show` needs root.** Bare `wg show` prints nothing and exits 0;
+      `wg show wg0` fails with `Unable to access interface: Operation not
+      permitted`. Last-handshake age is therefore **dropped**, per the rule
+      that a Tier 3 stat is not worth a polkit prompt.
+
+Two things the reading turned up that were not on the list:
+
+- **`wg-quick` enforces `^[a-zA-Z0-9_=+.-]{1,15}$` on the interface name**,
+  which confirms the 15-character cap from the script itself rather than from
+  `IFNAMSIZ` by inference. Our existing name pattern is a strict subset apart
+  from the length, so only the cap has to become a backend property.
+- **`wg-quick` re-execs itself under `sudo` when not root** (line 86). That is
+  constraint 3 all over again: it must never be invoked from QML, only through
+  the unit, which already runs as root. Recorded in `CLAUDE.md`.
+- The unit is `Type=oneshot` with `RemainAfterExit=yes`, unlike OpenVPN's
+  long-running service. `systemctl is-active` will therefore keep saying
+  `active` even if the link is gone — the device-based telemetry is what
+  actually notices, so read it, not just the unit state.
 
 ### The one real architecture change
 `wg-quick` names the interface after the config file: `wg0.conf` → `wg0`. The

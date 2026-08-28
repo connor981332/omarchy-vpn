@@ -330,10 +330,32 @@ BAD_UNIT="openvpn-client@${BAD_PROFILE}.service"
 BAD_HOOK="/usr/lib/connor-vpn-harness-hook-that-is-not-installed"
 BAD_STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/$BAD_PROFILE"
 
-{ cat "$WORK/rewritten.conf"; echo "script-security 2"; echo "up $BAD_HOOK"; } \
+# Planned again under its OWN name, not by reusing the first profile's staging
+# arguments: install-profile refuses a staging directory holding a file named
+# for a different profile, and the rewritten config points at those filenames.
+BAD_PLAN_JSON="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const C = load("backends/openvpn/Config.js")
+  const fs = require("fs")
+  const src = process.argv[1]
+  const plan = C.plan(fs.readFileSync(src, "utf8"),
+                      { name: process.argv[2], sourceDir: src.replace(/\/[^/]+$/, "") })
+  fs.writeFileSync(process.argv[3], plan.content)
+  console.log(JSON.stringify({ assets: plan.assets }))
+' "$WORK/client.ovpn" "$BAD_PROFILE" "$WORK/badhook-base.conf")"
+
+BAD_STAGE_ARGS=()
+while IFS=$'\t' read -r source target; do
+  [[ -n $source ]] && BAD_STAGE_ARGS+=(--asset "$source" "$target")
+done < <(echo "$BAD_PLAN_JSON" | "$NODE" -e '
+  let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+    JSON.parse(s).assets.forEach(a => console.log(a.source + "\t" + a.target))
+  })')
+
+{ cat "$WORK/badhook-base.conf"; echo "script-security 2"; echo "up $BAD_HOOK"; } \
   > "$WORK/badhook.conf"
 
-"$ROOT/bin/stage-profile" "$BAD_STAGING" "$BAD_PROFILE.conf" "${STAGE_ARGS[@]}" \
+"$ROOT/bin/stage-profile" "$BAD_STAGING" "$BAD_PROFILE.conf" "${BAD_STAGE_ARGS[@]}" \
   --hook "$BAD_HOOK" < "$WORK/badhook.conf" > "$WORK/stage-badhook.out"
 check "staged the profile with the bogus hook" $?
 

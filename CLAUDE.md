@@ -70,6 +70,10 @@ why `rescan` (a privileged `list`) is user-initiated and never polled.
 shell process. Never call it from QML. `omarchy-install-app` runs it inside
 Omarchy's themed floating terminal, which does have one.
 
+`wg-quick` has the same shape — it re-execs itself under `sudo` when `$UID`
+is not 0 — so it too must only ever be reached through its unit, never run
+directly from the widget.
+
 ## How this plugin is loaded
 
 `manifest.json` declares `kinds: ["bar-widget"]` and points
