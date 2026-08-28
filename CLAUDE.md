@@ -335,8 +335,12 @@ a marker (`ran:`) so "found nothing" and "never ran" cannot be confused.
   which is the evidence it did not interfere. No `[keyfile] unmanaged-devices`
   entry is needed. (Caveat: the harness tunnel is short-lived and deliberately
   does not push a default route. A full-tunnel profile is worth one more look.)
-- Secret storage for `auth-user-pass` credentials. Currently a profile needing
-  interactive credentials warns at import and will not start.
-- Post-MVP, all structurally accommodated but not implemented: WireGuard, kill
-  switch, split tunnelling, auto-connect on untrusted Wi-Fi, OTP/2FA, exit-IP
-  geo, endpoint latency.
+- ~~Secret storage for `auth-user-pass` credentials.~~ **DONE (Phase 3).** A
+  bare `auth-user-pass` is rewritten to `auth-user-pass <name>.auth`, and the
+  helper's `set-credentials` writes that file root-owned 0600 from stdin. The
+  panel offers the two fields on the row; `AUTH_FAILED` is translated into a
+  sentence that names the cause. Verified against a real server that checks
+  the values, in Tier 2.
+- Post-MVP, all structurally accommodated but not implemented: kill switch,
+  split tunnelling, auto-connect on untrusted Wi-Fi, OTP/2FA, exit-IP geo,
+  endpoint latency. (WireGuard landed in Phase 2.)

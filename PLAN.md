@@ -408,7 +408,7 @@ which the keyring cannot.
 **Done when:** a profile using `auth-user-pass` imports, prompts once, connects,
 and reconnects later without prompting again.
 
-### Status: built 2026-08-27 — Tier 2 re-run pending after the harness fix
+### Status: complete, 2026-08-27
 
 The design above is what shipped, with no reopened decisions.
 
@@ -490,6 +490,8 @@ Completed`, which is the only line that means the credentials were accepted.
 The success-side check was strengthened at the same time — it had asserted
 `is-active`, which the wrong-password run also satisfied for its first two
 seconds, and so proved less than it appeared to.
+
+Tier 2 then ran green, 79/79. **This phase is done.**
 
 ---
 
