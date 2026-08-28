@@ -664,6 +664,16 @@ Seven mechanical checks were each verified to fail when the code was
 deliberately broken: both chains fail-closed, the `inet` family, the DNS drop
 sitting above the LAN accept, the poll never disarming, and the rest.
 
+Two more found on the first full run, both in the tests rather than the code.
+`grep -c` prints `0` and exits 1 when it matches nothing, so
+`$(grep -c ... || echo 0)` produced `0\n0` and killed the arithmetic that
+tallied the namespace's TAP — including the `ran:` guard whose entire job was
+to notice that the namespace had executed. It misfires only when everything
+passes. And breaking `oifname "lo" accept` on purpose changed nothing, which
+is how the missing loopback assertion surfaced: the rule carries no counter,
+so it could have been deleted outright with every other assertion still
+green.
+
 **Still human:** the polkit prompt from the toggle, and one real-world
 connection with a full-tunnel commercial profile — which is also the last look
 at whether NetworkManager touches a tunnel that owns the default route.

@@ -100,6 +100,17 @@ lan="$(counter_for lan)"
 [[ ${lan:-0} -gt 0 ]] && say "ok - the local network is still reachable" \
   || say "not ok - the local network is still reachable (lan counter ${lan:-unset})"
 
+# Loopback. Nothing on the machine survives losing it, and the rule that
+# permits it carries no counter of its own -- so without this the rule could
+# be deleted outright and every other assertion here would still pass.
+before="$(counter_for blocked)"
+ping -c1 -W1 127.0.0.1 >/dev/null 2>&1
+lo_ok=$?
+after="$(counter_for blocked)"
+[[ $lo_ok -eq 0 && ${after:-0} -eq ${before:-0} ]] \
+  && say "ok - loopback is untouched" \
+  || say "not ok - loopback is untouched (ping rc $lo_ok, blocked ${before} -> ${after})"
+
 udp_to 10.77.0.1 1194
 ep="$(counter_for endpoint)"
 [[ ${ep:-0} -gt 0 ]] \
@@ -209,15 +220,19 @@ INNER
 
 cat "$INNER_OUT"
 
-inner_ok="$(grep -c '^ok - ' "$INNER_OUT" 2>/dev/null || echo 0)"
-inner_bad="$(grep -c '^not ok - ' "$INNER_OUT" 2>/dev/null || echo 0)"
+# No `|| echo 0` here: `grep -c` already prints 0 when it matches nothing, and
+# it exits 1 while doing so — so the fallback appended a SECOND zero and every
+# arithmetic expression below died on "0\n0". It only happened when the inner
+# assertions all passed, which is exactly when nobody looks.
+inner_ok="$(grep -c '^ok - ' "$INNER_OUT" 2>/dev/null)"
+inner_bad="$(grep -c '^not ok - ' "$INNER_OUT" 2>/dev/null)"
 pass=$((pass + inner_ok))
 fail=$((fail + inner_bad))
 
 # `command -v node` does not mean node runs, and a namespace that exits early
 # does not mean its assertions passed. The count is the marker that says the
 # body actually executed.
-EXPECTED_INNER=14
+EXPECTED_INNER=15
 if [[ $((inner_ok + inner_bad)) -eq $EXPECTED_INNER ]]; then
   check "ran: all $EXPECTED_INNER namespace assertions executed" 0
 else

@@ -264,6 +264,13 @@ anywhere else in this project, since the thing under test takes machines off
 the network. `test/killswitch.test.sh` runs in the default suite for exactly
 that reason; it is not a Tier 2.
 
+`grep -c` prints `0` and **exits 1** when it matches nothing, so the habitual
+`$(grep -c ... || echo 0)` appends a second zero and every `$(( ))` after it
+dies on `0\n0`. It only misfires when everything passed, which is exactly when
+nobody reads the output — the guard that was there to prove the namespace had
+run was itself silently skipped for two full runs. Drop the fallback: `grep -c`
+already prints the number.
+
 Assert on **counters, not on rule text**. A rule set that reads correctly and
 drops the tunnel's own handshake is the failure worth catching, and only a
 packet can tell you. Two traps found writing it: without an IPv6 address and
