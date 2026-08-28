@@ -5,7 +5,7 @@
   "version": "1.2.0",
   "author": "Connor Bunch",
   "license": "MIT",
-  "description": "OpenVPN and WireGuard status, connect/disconnect, profile import, and tunnel-scoped stats in the Omarchy bar.",
+  "description": "OpenVPN and WireGuard from the Omarchy bar: import profiles, connect, store credentials, watch tunnel-scoped stats, and block traffic outside the tunnel with a kill switch.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Import, connect, and monitor VPN profiles without leaving the bar.",
+    "description": "Import, connect, and monitor VPN profiles — with an optional kill switch — without leaving the bar.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

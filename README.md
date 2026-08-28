@@ -3,6 +3,9 @@
 `connor.vpn`. Import, connect, and monitor OpenVPN and WireGuard tunnels from
 the Omarchy bar, without opening a terminal.
 
+It stores credentials for profiles that need a username and password, and has
+an optional **kill switch** that blocks everything outside the tunnel.
+
 The widget drives the **stock systemd template units** that ship with the
 `openvpn` and `wireguard-tools` packages. It installs no daemon, no unit file,
 and no polkit policy of its own — privileged operations authenticate through

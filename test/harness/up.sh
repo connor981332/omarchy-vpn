@@ -118,6 +118,12 @@ cleanup() {
   "$ROOT/bin/install-profile" remove openvpn "$AUTH_PROFILE" >/dev/null 2>&1 || true
   systemctl stop "$WG_UNIT" >/dev/null 2>&1 || true
   "$ROOT/bin/install-profile" remove wireguard "$WG_PROFILE" >/dev/null 2>&1 || true
+  # The badhook profile is meant to fail, so systemd remembers it as `failed`
+  # long after its files are gone. Leaving that on the user's machine is the
+  # harness dirtying a system it does not own.
+  systemctl reset-failed "openvpn-client@${PROFILE}.service" \
+    "openvpn-client@${BAD_PROFILE}.service" \
+    "openvpn-client@${AUTH_PROFILE}.service" "$WG_UNIT" >/dev/null 2>&1 || true
   ip netns exec "$NS" ip link del "$WG_SRV_DEV" >/dev/null 2>&1 || true
   ip netns pids "$NS" 2>/dev/null | xargs -r kill >/dev/null 2>&1
   ip netns del "$NS" >/dev/null 2>&1 || true

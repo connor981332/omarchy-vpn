@@ -69,7 +69,7 @@ it back afterwards. The tunnel will not start meanwhile; nothing else breaks.
 connected tunnel with no terminal typing, and `test/dependency.test.sh` asserts
 the post-install recheck actually clears the card.
 
-### Status: built 2026-08-27, awaiting the Tier 2 run
+### Status: complete, 2026-08-27
 
 The defect is fixed by a bounded watch (3s interval, 100 ticks, stopping the
 instant the probe comes back clean); the manual Re-check button survives as the
@@ -165,7 +165,7 @@ simpler than OpenVPN's, with no side files in the common case.
 Tier 2 brings up a wg tunnel alongside the OpenVPN one; the architecture test
 still passes with two backends registered.
 
-#### Status: backend built 2026-08-27, never yet run against a tunnel
+#### Status: complete, 2026-08-27 — since run against a real tunnel in Tier 2
 
 **The abstraction held.** Adding the protocol cost one line in `all`, one
 import, one instantiation — `Backends.qml` went from 14 to 16 lines of code
@@ -625,7 +625,7 @@ what the tests and the recovery path use; the marker is what the panel reads.
 reaches the internet; disarming restores connectivity fully; and a test asserts
 both, in a namespace, without touching the host's rules.
 
-### Status: built 2026-08-27
+### Status: complete, 2026-08-27
 
 Everything above shipped. Two things came out differently from the sketch and
 both are improvements.

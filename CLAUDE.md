@@ -390,9 +390,10 @@ a marker (`ran:`) so "found nothing" and "never ran" cannot be confused.
 
 ## Still open
 
-- `wg-quick@.service` shipping with `wireguard-tools` is **unverified** —
-  `pacman -Fl` needs `pacman -Fy` first (root + network). Only gates the
-  WireGuard backend, which is out of MVP scope.
+- ~~`wg-quick@.service` shipping with `wireguard-tools`.~~ **ANSWERED: it
+  does** (Phase 2), along with its sandboxing directives — there are none —
+  and `/etc/wireguard` being 0700 root:root by the package itself rather than
+  by tmpfiles.
 - ~~Whether NetworkManager tries to manage `tun0`.~~ **ANSWERED: it does not.**
   During a Tier 2 run NM logged `manager: (tun0): new Generic device` and
   `carrier: link connected` — it registers an externally created tun device as
@@ -407,6 +408,12 @@ a marker (`ran:`) so "found nothing" and "never ran" cannot be confused.
   panel offers the two fields on the row; `AUTH_FAILED` is translated into a
   sentence that names the cause. Verified against a real server that checks
   the values, in Tier 2.
-- Post-MVP, all structurally accommodated but not implemented: kill switch,
-  split tunnelling, auto-connect on untrusted Wi-Fi, OTP/2FA, exit-IP geo,
-  endpoint latency. (WireGuard landed in Phase 2.)
+- **The one thing left that a machine cannot answer:** a real connection to a
+  commercial full-tunnel provider. That is also the last look at the
+  NetworkManager caveat above, since the only profile NM has been observed
+  against does not move the default route. Everything else in the four phases
+  is built and tested.
+- Post-MVP, all structurally accommodated but not implemented: split
+  tunnelling, auto-connect on untrusted Wi-Fi, OTP/2FA, exit-IP geo, endpoint
+  latency, profile editing in the UI. (WireGuard landed in Phase 2,
+  credentials in Phase 3, the kill switch in Phase 4.)
