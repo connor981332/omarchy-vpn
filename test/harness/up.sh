@@ -50,9 +50,12 @@ SKIP=77
 NODE="${NODE:-}"
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  NODE="$(command -v node || true)"
+  # Resolved by running a candidate, not by finding one on PATH: a version
+  # manager's shim is executable and still fails at runtime, and the failure
+  # arrives here as an empty string that some assertions would PASS on.
+  NODE="$("$ROOT/test/find-node.sh" || true)"
   if [[ -z $NODE ]]; then
-    echo "SKIP: node is not installed"
+    echo "SKIP: no working node was found"
     exit $SKIP
   fi
   echo "# needs root for netns and systemctl; re-running under sudo"
@@ -67,6 +70,14 @@ fi
 
 if [[ -z $NODE || ! -x $NODE ]]; then
   echo "SKIP: node was not found as root (got '${NODE:-none}')"
+  exit $SKIP
+fi
+
+# And it must still run as root — a shim resolves against the *invoking* user's
+# configuration, so surviving the sudo boundary is not a given.
+if ! "$NODE" -e 'process.stdout.write("ok")' >/dev/null 2>&1; then
+  echo "SKIP: node at $NODE does not run as root"
+  "$NODE" -e 'process.stdout.write("ok")' 2>&1 | sed 's/^/# /'
   exit $SKIP
 fi
 
@@ -365,6 +376,9 @@ done < <(echo "$BAD_PLAN_JSON" | "$NODE" -e '
     JSON.parse(s).assets.forEach(a => console.log(a.source + "\t" + a.target))
   })')
 
+test -s "$WORK/badhook-base.conf"
+check "the broken profile's config was actually written" $?
+
 { cat "$WORK/badhook-base.conf"; echo "script-security 2"; echo "up $BAD_HOOK"; } \
   > "$WORK/badhook.conf"
 
@@ -488,6 +502,9 @@ check "the endpoint is read out of [Peer]" $? "$WG_PLAN_JSON"
 echo "$WG_PLAN_JSON" | grep -q '"assets":0'
 check "a self-contained profile needs no side files" $? "$WG_PLAN_JSON"
 
+test -s "$WORK/wg-rewritten.conf"
+check "the WireGuard config was actually written" $?
+
 WG_STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/$WG_PROFILE"
 "$ROOT/bin/stage-profile" "$WG_STAGING" "$WG_PROFILE.conf" \
   < "$WORK/wg-rewritten.conf" >/dev/null
@@ -524,16 +541,20 @@ check "wg-quick named the interface after the profile, as deviceFor() assumes" $
 
 # And the reason that seam has to exist: prefix discovery cannot find this
 # device, so without deviceFor() the widget would have no device at all.
+# The empty answer this asserts is also what a node that failed to run
+# returns, so the marker makes the two distinguishable — without it this
+# assertion passes on a broken toolchain, which is how it reported success
+# while nothing had been tested at all.
 WG_DISCOVERED="$(cd "$ROOT" && "$NODE" -e '
   const {load} = require("./test/qmljs")
   const M = load("Model.js")
   const before = JSON.parse(process.argv[1]).map(l => l.ifname)
   const after = JSON.parse(process.argv[2]).map(l => l.ifname)
-  console.log(M.newDevice(before, after, []))
+  console.log("ran:" + M.newDevice(before, after, []))
 ' "$WG_DEVICES_BEFORE" "$(ip -j link)")"
-[[ -z $WG_DISCOVERED ]]
+[[ $WG_DISCOVERED == "ran:" ]]
 check "prefix discovery finds nothing, so the seam is load-bearing" $? \
-  "newDevice() returned '$WG_DISCOVERED'"
+  "expected 'ran:', got '$WG_DISCOVERED'"
 
 # ---------------------------------------------------------- telemetry plane
 

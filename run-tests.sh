@@ -34,11 +34,22 @@ run() {
   fi
 }
 
-command -v node >/dev/null || { echo "node is required for the unit tests"; exit 1; }
+# Not `command -v node`: a version manager's shim is executable and still
+# fails at runtime when no version is pinned, which makes every Tier 1 suite
+# fail at once with a message about the shim rather than about this project.
+# find-node.sh runs its candidates instead of inspecting them.
+NODE="$(./test/find-node.sh || true)"
+if [[ -z $NODE ]]; then
+  echo "node is required for the unit tests, and no working one was found."
+  echo "If you use a version manager, pin a version — e.g. mise use -g node@lts"
+  exit 1
+fi
+export NODE
+[[ $NODE == "$(command -v node 2>/dev/null || true)" ]] || echo "# node: $NODE"
 
-run "Tier 1  Model.js"                node test/model.test.js
-run "Tier 1  OpenVPN config"          node test/config.test.js
-run "Tier 1  WireGuard config"        node test/wireguard-config.test.js
+run "Tier 1  Model.js"                "$NODE" test/model.test.js
+run "Tier 1  OpenVPN config"          "$NODE" test/config.test.js
+run "Tier 1  WireGuard config"        "$NODE" test/wireguard-config.test.js
 run "Tier 1  systemd escaping"        ./test/harness/escape.test.sh
 run "         privileged helper"      ./test/helper.test.sh
 run "         architecture"           ./test/architecture.test.sh

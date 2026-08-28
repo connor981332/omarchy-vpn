@@ -246,10 +246,20 @@ Two refinements found while building the WireGuard harness section:
 Still needs a human: visual polish, the polkit prompt appearing from the QML
 plugin, and a real-world connection as a final sanity check.
 
-Two harness lessons worth keeping, both of which cost a debugging round:
+Three harness lessons worth keeping, each of which cost a debugging round:
 generated certs need `keyUsage` as well as `extendedKeyUsage` or
-`remote-cert-tls server` fails with a misleading trust error, and a `check`
-that prints no detail on failure hides the log that explains it.
+`remote-cert-tls server` fails with a misleading trust error; a `check`
+that prints no detail on failure hides the log that explains it; and
+**`command -v node` does not mean node runs.**
+
+That last one is the dangerous shape. A version manager puts a shim on PATH
+that is present and executable but exits non-zero, printing nothing on stdout,
+when no version is pinned for the directory. Every `$NODE` call then yields an
+empty string — and an assertion of the form `[[ -z $result ]]` *passes*. One
+integration run reported `ok` for a check while nothing whatsoever had been
+tested. `test/find-node.sh` therefore resolves node by **running** a candidate,
+not by finding one, and any assertion whose expected value is empty must carry
+a marker (`ran:`) so "found nothing" and "never ran" cannot be confused.
 
 ### Three things that look like bugs and are not
 
