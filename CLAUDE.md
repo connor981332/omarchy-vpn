@@ -209,6 +209,20 @@ blocks forever without EOF. Verified with a throwaway `quickshell -p` config
 running `cat` and checking the file was written and the process exited 0. If a
 process that reads stdin ever hangs, this is the first thing to check.
 
+**`stdinEnabled = false` only sends EOF on a CHANGE, so it must be re-armed.**
+Found the hard way: the first import of a shell session worked and every one
+after it hung. After a run the property is already `false`, so the next run's
+`stdinEnabled = false` fires no change, the pipe is never closed, and
+`stage-profile`'s `cat` waits forever — with the whole config already written,
+which is what makes it look like a parsing problem rather than a plumbing one.
+Set `stdinEnabled = true` before starting the process every time.
+
+The same shape bites any property whose effect is the transition rather than
+the value: assigning a `FileView` the path it already holds triggers no read,
+so re-importing the same file sits at "Reading…" forever. Both are pinned by
+`test/architecture.test.sh`. **When a symptom is "worked once, then hung",
+look for an assignment that is a no-op the second time.**
+
 **A tunnel can be tested without root, using a user namespace.**
 
 ```bash

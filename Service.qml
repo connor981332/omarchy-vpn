@@ -540,7 +540,10 @@ Item {
     _importPath = path
     _importName = name
     actionStatus = "Reading " + name + "…"
-    // Assigning the path triggers the read; onLoaded continues the flow.
+    // Assigning the path triggers the read, and only a CHANGE triggers it —
+    // re-importing the same file would otherwise sit at "Reading…" forever.
+    // Same shape as the stdin re-arm below.
+    importFile.path = ""
     importFile.path = path
   }
 
@@ -574,6 +577,14 @@ Item {
     for (var c = 0; c < checks.length; c++) command.push("--command", checks[c].command)
 
     actionStatus = "Preparing " + _importName + "…"
+    // Re-arm stdin before every run. `stdinEnabled = false` is what sends EOF,
+    // and it only sends it on a CHANGE — after one import the property is
+    // already false, so the next import's assignment fires nothing, the pipe
+    // is never closed, and stage-profile's `cat` waits forever with the whole
+    // config already written. Verified with a throwaway `quickshell -p`
+    // config: the second run of the same Process writes its payload and never
+    // exits, and re-arming fixes it.
+    importProcess.stdinEnabled = true
     importProcess.command = command
     importProcess.running = true
   }

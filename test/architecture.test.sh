@@ -107,6 +107,37 @@ else
   check "no pacman/yay call from QML" 1 "$offenders"
 fi
 
+echo "# properties that only act on a change are re-armed"
+# The bug this catches cost an import: `stdinEnabled = false` is what sends
+# EOF to a process reading stdin, and it only sends it on a CHANGE. After one
+# run the property is already false, so the next run's assignment fires
+# nothing, the pipe is never closed, and the helper's `cat` waits forever with
+# the whole payload already written. The first import of a session worked and
+# every one after it hung.
+if grep -q 'stdinEnabled = false' Service.qml; then
+  if grep -q '\.stdinEnabled = true' Service.qml; then
+    check "a Process that closes stdin re-arms it before the next run" 0
+  else
+    check "a Process that closes stdin re-arms it before the next run" 1 \
+      "$(grep -n 'stdinEnabled' Service.qml)"
+  fi
+else
+  check "a Process that closes stdin re-arms it before the next run" 0
+fi
+
+# Same shape: assigning a FileView the path it already holds is not a change,
+# so re-importing the same file never triggers a read.
+if grep -q 'importFile.path = path' Service.qml; then
+  if grep -B2 'importFile.path = path' Service.qml | grep -q 'importFile.path = ""'; then
+    check "a FileView is cleared before being handed the same path again" 0
+  else
+    check "a FileView is cleared before being handed the same path again" 1 \
+      "$(grep -n 'importFile.path' Service.qml)"
+  fi
+else
+  check "a FileView is cleared before being handed the same path again" 0
+fi
+
 echo "# no symlinks — plugin validation rejects them"
 links="$(find . -type l -not -path './.git/*' 2>/dev/null || true)"
 if [[ -z $links ]]; then
