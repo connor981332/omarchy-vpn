@@ -1,0 +1,180 @@
+#!/bin/bash
+#
+# The plugin's only privileged operation besides `systemctl start`. Invoked as
+# `pkexec /path/to/install-profile <verb> ...`, so it authenticates through the
+# running polkit agent and holds no persistent privilege.
+#
+# It exists because the openvpn package ships
+# `d /etc/openvpn/client 0750 openvpn network` in its tmpfiles, so the profile
+# directory is unreadable and unwritable by a normal user on every Arch
+# install — the widget cannot put a file there, list what is there, or delete
+# from there without becoming root for exactly that moment.
+#
+# Everything it is asked to do is deliberately dumb. The caller is
+# unprivileged and therefore untrusted, so:
+#   - the destination directory is chosen HERE from a protocol token, never
+#     taken from the caller;
+#   - the profile name must match a strict pattern, so it cannot traverse;
+#   - the staging directory may contain only regular files, so a symlink
+#     cannot make root copy something it was not shown.
+#
+# Usage:
+#   install-profile install <protocol> <name> <staging-dir>
+#   install-profile remove  <protocol> <name>
+#   install-profile list    <protocol>
+
+set -euo pipefail
+
+die() {
+  echo "install-profile: $*" >&2
+  exit 1
+}
+
+# --------------------------------------------------------------- destinations
+#
+# The one place in the plugin outside backends/ that names a protocol, and it
+# is load-bearing: a caller that could pick the directory could write anywhere.
+profile_dir() {
+  case "$1" in
+    openvpn) echo "/etc/openvpn/client" ;;
+    wireguard) echo "/etc/wireguard" ;;
+    *) die "unknown protocol '$1'" ;;
+  esac
+}
+
+profile_owner() {
+  case "$1" in
+    openvpn) echo "openvpn:network" ;;
+    wireguard) echo "root:root" ;;
+    *) die "unknown protocol '$1'" ;;
+  esac
+}
+
+profile_ext() {
+  echo "conf"
+}
+
+# A profile name becomes a filename and a systemd instance. Anything outside
+# this set is refused rather than sanitized: silently changing the name the
+# caller asked for is how a delete removes the wrong file.
+validate_name() {
+  local name="$1"
+  [[ -n $name ]] || die "empty profile name"
+  [[ ${#name} -le 64 ]] || die "profile name too long"
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid profile name '$name'"
+  [[ $name != *..* ]] || die "invalid profile name '$name'"
+}
+
+require_dir() {
+  local dir="$1" protocol="$2"
+  if [[ ! -d $dir ]]; then
+    # systemd-tmpfiles owns the mode; recreating it by hand would get it wrong.
+    systemd-tmpfiles --create >/dev/null 2>&1 || true
+  fi
+  [[ -d $dir ]] || die "$dir does not exist — is the $protocol package installed?"
+}
+
+# ------------------------------------------------------------------- verbs
+
+cmd_install() {
+  local protocol="${1-}" name="${2-}" staging="${3-}"
+  [[ -n $protocol && -n $name && -n $staging ]] || die "usage: install <protocol> <name> <staging-dir>"
+  validate_name "$name"
+
+  local dir owner
+  dir="$(profile_dir "$protocol")"
+  owner="$(profile_owner "$protocol")"
+  require_dir "$dir" "$protocol"
+
+  [[ -d $staging ]] || die "staging directory '$staging' does not exist"
+  [[ ! -L $staging ]] || die "staging directory is a symlink"
+
+  # The config itself must be present, and must be named for the profile, so
+  # the unit's `--config %i.conf` finds it.
+  local config="$staging/$name.$(profile_ext "$protocol")"
+  [[ -f $config ]] || die "staging directory has no $name.$(profile_ext "$protocol")"
+
+  # Vet the whole staging directory before writing anything: a partial install
+  # leaves a profile that starts and then fails on a missing cert.
+  local entry
+  for entry in "$staging"/*; do
+    [[ -e $entry ]] || continue
+    [[ ! -L $entry ]] || die "'$(basename "$entry")' is a symlink"
+    [[ -f $entry ]] || die "'$(basename "$entry")' is not a regular file"
+    [[ $(basename "$entry") == "$name" || $(basename "$entry") == "$name".* ]] \
+      || die "'$(basename "$entry")' does not belong to profile '$name'"
+  done
+
+  # 0600: these files carry private keys and passphrases.
+  for entry in "$staging"/*; do
+    [[ -f $entry ]] || continue
+    install -o "${owner%%:*}" -g "${owner##*:}" -m 0600 "$entry" "$dir/$(basename "$entry")"
+  done
+
+  echo "installed $name"
+}
+
+cmd_remove() {
+  local protocol="${1-}" name="${2-}"
+  [[ -n $protocol && -n $name ]] || die "usage: remove <protocol> <name>"
+  validate_name "$name"
+
+  local dir
+  dir="$(profile_dir "$protocol")"
+  [[ -d $dir ]] || die "$dir does not exist"
+
+  # Stop it first, or the files vanish under a running tunnel.
+  systemctl stop "$(unit_name "$protocol" "$name")" >/dev/null 2>&1 || true
+
+  local removed=0 entry
+  for entry in "$dir/$name" "$dir/$name".*; do
+    [[ -f $entry && ! -L $entry ]] || continue
+    rm -f -- "$entry"
+    removed=$((removed + 1))
+  done
+
+  [[ $removed -gt 0 ]] || die "no profile named '$name' in $dir"
+  echo "removed $name ($removed files)"
+}
+
+cmd_list() {
+  local protocol="${1-}"
+  [[ -n $protocol ]] || die "usage: list <protocol>"
+
+  local dir ext entry base
+  dir="$(profile_dir "$protocol")"
+  ext="$(profile_ext "$protocol")"
+  [[ -d $dir ]] || exit 0
+
+  for entry in "$dir"/*."$ext"; do
+    [[ -f $entry && ! -L $entry ]] || continue
+    base="$(basename "$entry" ".$ext")"
+    # Never print a name the rest of the plugin would then refuse to handle.
+    [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+    echo "$base"
+  done
+}
+
+# The instance name is the profile name literally — NOT systemd-escaped.
+# These templates expand `%i` (the raw instance) into a filename, so the
+# instance must match the file this script wrote. validate_name() has already
+# restricted the name to characters that are legal in an instance as-is.
+unit_name() {
+  case "$1" in
+    openvpn) echo "openvpn-client@$2.service" ;;
+    wireguard) echo "wg-quick@$2.service" ;;
+    *) die "unknown protocol '$1'" ;;
+  esac
+}
+
+# ------------------------------------------------------------------- dispatch
+
+verb="${1-}"
+shift || true
+
+case "$verb" in
+  install) cmd_install "$@" ;;
+  remove) cmd_remove "$@" ;;
+  list) cmd_list "$@" ;;
+  *) die "usage: install-profile {install|remove|list} ..." ;;
+esac

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "id": "connor.vpn",
+  "name": "VPN",
+  "version": "1.0.0",
+  "author": "Connor Bunch",
+  "license": "MIT",
+  "description": "OpenVPN status, connect/disconnect, profile import, and tunnel-scoped stats in the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "VPN",
+    "description": "Import, connect, and monitor VPN profiles without leaving the bar.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 15,
+      "hideWhenDisconnected": false,
+      "showExitIp": false,
+      "lastTunnelId": ""
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 15
+      },
+      {
+        "key": "hideWhenDisconnected",
+        "type": "boolean",
+        "label": "Hide the bar icon when no VPN is up",
+        "defaultValue": false
+      },
+      {
+        "key": "showExitIp",
+        "type": "boolean",
+        "label": "Show exit IP (contacts an external service)",
+        "defaultValue": false
+      }
+    ]
+  }
+}

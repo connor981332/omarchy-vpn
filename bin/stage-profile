@@ -1,0 +1,74 @@
+#!/bin/bash
+#
+# Assembles a profile into a private staging directory, ready for
+# bin/install-profile to move into place.
+#
+# This runs as the user, with no privilege at all, and that is the point: it
+# can only read files the user could already read, so nothing here can be
+# tricked into disclosing something. All the privileged step then has to do is
+# move a directory of vetted regular files — which is a much smaller thing to
+# audit than "copy these paths as root".
+#
+# The rewritten config arrives on stdin rather than as a path, so the config
+# text never has to survive a round trip through a temp file the caller names.
+#
+# Usage:
+#   stage-profile <staging-dir> <config-filename> [--asset <source> <target>]...
+#   ...with the config text on stdin.
+
+set -euo pipefail
+
+die() {
+  echo "stage-profile: $*" >&2
+  exit 1
+}
+
+staging="${1-}"
+config_name="${2-}"
+shift 2 2>/dev/null || die "usage: stage-profile <staging-dir> <config-filename> [--asset <src> <target>]..."
+
+[[ -n $staging && -n $config_name ]] || die "usage: stage-profile <staging-dir> <config-filename> [--asset <src> <target>]..."
+
+# The staging directory is ours to own completely, so it is refused unless it
+# sits under our own cache root — a caller that could name any directory could
+# make this delete it.
+case "$staging" in
+  "${XDG_CACHE_HOME:-$HOME/.cache}"/connor.vpn/staging/*) ;;
+  *) die "staging directory must be under \${XDG_CACHE_HOME:-\$HOME/.cache}/connor.vpn/staging/" ;;
+esac
+
+[[ $staging != *..* ]] || die "staging path may not contain '..'"
+[[ $config_name != */* && $config_name != *..* ]] || die "config filename may not contain a path"
+
+# A stale directory from an abandoned import would otherwise be installed
+# alongside the new one.
+[[ ! -L $staging ]] || die "staging path is a symlink"
+rm -rf -- "$staging"
+mkdir -p -- "$staging"
+chmod 700 -- "$staging"
+
+# 0600 from the moment it exists: the config carries inline private keys.
+umask 077
+cat > "$staging/$config_name"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --asset)
+      source="${2-}"
+      target="${3-}"
+      [[ -n $source && -n $target ]] || die "--asset needs <source> <target>"
+      [[ $target != */* && $target != *..* ]] || die "asset target may not contain a path"
+      [[ -e $source ]] || die "'$source' does not exist — the profile references a file that is not there"
+      [[ -f $source ]] || die "'$source' is not a regular file"
+      [[ -r $source ]] || die "'$source' is not readable"
+      cp -- "$source" "$staging/$target"
+      chmod 600 -- "$staging/$target"
+      shift 3
+      ;;
+    *)
+      die "unknown argument '$1'"
+      ;;
+  esac
+done
+
+echo "$staging"

@@ -1,0 +1,13 @@
+# The Tier 2 harness works in /tmp, so nothing of its own lands here — but
+# make-certs.sh takes an output directory and a stray run must never commit a
+# private key.
+*.key
+*.crt
+*.pem
+*.p12
+*.ovpn
+
+# Editor and OS noise.
+*~
+*.swp
+.DS_Store
