@@ -165,6 +165,45 @@ simpler than OpenVPN's, with no side files in the common case.
 Tier 2 brings up a wg tunnel alongside the OpenVPN one; the architecture test
 still passes with two backends registered.
 
+#### Status: backend built 2026-08-27, never yet run against a tunnel
+
+**The abstraction held.** Adding the protocol cost one line in `all`, one
+import, one instantiation — `Backends.qml` went from 14 to 16 lines of code
+against its cap of 20 — plus the folder, and exactly the one predicted seam.
+Nothing in `Service.qml`, `Panel.qml`, `Telemetry.qml` or `ProfileStore.qml`
+learned a protocol name; the architecture test still passes unchanged.
+
+The seam, as designed: `Backend.deviceFor(name)` is optional, and
+`Service.qml` asks for it before falling back to `Model.newDevice()` diffing.
+It turned out to be worth more than expected — it also removes the documented
+guesswork in the "already up when the shell started" path, where a tunnel with
+no before/after snapshot used to take the first unclaimed device matching its
+protocol and could pair the wrong device with the wrong row. For a backend
+that names its device, that ambiguity is simply gone.
+
+`devicePrefixes` is deliberately **empty** for WireGuard. A profile called
+`home` creates an interface called `home`, so a prefix cannot find it, and
+guessing would be worse than not knowing — every telemetry read downstream
+would follow the wrong interface.
+
+Second predicted change also landed: `sanitizeProfileName(name, maxLength)`
+takes the cap from `Backend.maxNameLength`. Confirmed from `wg-quick` itself
+rather than inferred — it enforces `{1,15}` in its own argument parsing, so a
+16-character name would install a profile that can never start.
+
+Tests: Tier 1 +23 (new WireGuard config suite), Model +3 (the cap is a
+backend property; truncation never re-exposes a trailing separator, which
+`install-profile` would refuse), Tier 4 +9 (the dependency matrix in both
+directions, plus a check that every registered backend declares the four
+fields the card needs).
+
+**Not done, and the reason this is not finished:** no WireGuard tunnel has
+ever been brought up. The parser is tested against configs, not against
+`wg-quick`, and no profile has been imported end to end. The Tier 2 harness
+still builds only an OpenVPN tunnel. Until that runs, this backend is
+plausible rather than proven — the same standard the OpenVPN side was held
+to.
+
 ### Also in this phase — surface why a tunnel actually failed
 
 Not WireGuard work, but scheduled here because it is the largest first-run gap
@@ -239,7 +278,15 @@ Tier 2 asserts it.
   (`hookTargets`), helper +4 (`stage-profile --hook`, including that a hook
   which *is* present stays silent), Tier 2 +8.
 
-Remaining: run `./run-tests.sh --integration` to exercise the Tier 2 block.
+Tier 2 ran green on 2026-08-27, 33/33. The panel now says
+`Options error: --up script fails with '/usr/lib/connor-vpn-harness-hook-that-is-not-installed': No such file or directory (errno=2)`
+where it used to say `Job for openvpn-client@… failed because the control
+process exited with error code.` **This item is done.**
+
+One cost worth recording: installing `wireguard-tools` made
+`/etc/wireguard` exist, so `helper.test.sh`'s `require_dir` failure assertion
+now reports `SKIP` on this machine rather than running. It degrades loudly,
+but that branch is no longer covered here.
 
 ---
 

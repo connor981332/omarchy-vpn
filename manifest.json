@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Connor Bunch",
   "license": "MIT",
-  "description": "OpenVPN status, connect/disconnect, profile import, and tunnel-scoped stats in the Omarchy bar.",
+  "description": "OpenVPN and WireGuard status, connect/disconnect, profile import, and tunnel-scoped stats in the Omarchy bar.",
   "kinds": [
     "bar-widget"
   ],

@@ -257,7 +257,13 @@ Item {
       var awaited = Model.findTunnel(tunnels, _awaitingDeviceFor)
       var backend = awaited ? backendFor(awaited.protocol) : null
       if (backend) {
-        var appeared = Model.newDevice(_devicesBefore, devices, backend.devicePrefixes)
+        // Some protocols name the interface after the profile, so the device
+        // is known in advance and there is nothing to discover. Diffing is
+        // the fallback for the ones that do not.
+        var appeared = _knownDevice(backend, awaited, devices)
+        if (appeared === "") {
+          appeared = Model.newDevice(_devicesBefore, devices, backend.devicePrefixes)
+        }
         if (appeared !== "") {
           assignments[_awaitingDeviceFor] = appeared
           claimed[appeared] = true
@@ -278,7 +284,9 @@ Item {
       // of never asking for privilege to find out properly.
       if (device === "" && tunnel.state === "up") {
         var proto = backendFor(tunnel.protocol)
-        if (proto) {
+        if (proto) device = _knownDevice(proto, tunnel, devices)
+        if (device !== "") claimed[device] = true
+        if (device === "" && proto) {
           for (var d = 0; d < devices.length; d++) {
             if (claimed[devices[d]]) continue
             for (var p = 0; p < proto.devicePrefixes.length; p++) {
@@ -324,6 +332,16 @@ Item {
       _clearPending()
       lastError = "`" + tunnel.name + "` failed to start. Check `journalctl -u " + tunnel.unit + "`."
     }
+  }
+
+  // "" when the backend cannot say, or when the device it names is not
+  // actually present — a stale answer would be worse than none, because every
+  // telemetry read downstream would then be pointed at the wrong interface.
+  function _knownDevice(backend, tunnel, devices) {
+    if (!backend || !tunnel || !backend.deviceFor) return ""
+    var named = backend.deviceFor(tunnel.name)
+    if (!named) return ""
+    return devices.indexOf(named) !== -1 ? named : ""
   }
 
   function _clearPending() {
@@ -514,7 +532,7 @@ Item {
   function _chosen(path) {
     var backend = backendFor(_importProtocol)
     if (!backend) return
-    var name = Model.profileNameFromPath(path)
+    var name = Model.profileNameFromPath(path, backend.maxNameLength)
     if (name === "") {
       lastError = "That filename does not make a usable profile name."
       return

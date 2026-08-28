@@ -104,6 +104,20 @@ t.test("caps length", () => {
   t.ok(M.sanitizeProfileName("x".repeat(200)).length === 64)
 })
 
+t.test("the cap is a backend property, not a constant", () => {
+  // One protocol names its interface after the config file and so inherits
+  // IFNAMSIZ; the other only needs a filename.
+  t.eq(M.sanitizeProfileName("x".repeat(200), 15).length, 15)
+  t.eq(M.profileNameFromPath("/tmp/" + "y".repeat(40) + ".conf", 15).length, 15)
+})
+
+t.test("truncating never leaves a trailing separator", () => {
+  // The pass that strips a trailing "." or "-" runs before the cut, so the cut
+  // can re-expose one — and install-profile refuses the result.
+  t.eq(M.sanitizeProfileName("abcdefghijklmn-opq", 15), "abcdefghijklmn")
+  t.ok(!/[.-]$/.test(M.sanitizeProfileName("a.b.c.d.e.f.g.h.i", 8)))
+})
+
 t.suite("tunnel shaping")
 
 const tun = (name, protocol, state) => M.makeTunnel({ name, protocol, state })

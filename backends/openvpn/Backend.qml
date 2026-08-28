@@ -33,6 +33,10 @@ QtObject {
   readonly property string fileExtensions: "ovpn conf"
   readonly property string importTitle: "Import an OpenVPN profile"
 
+  // Only ever a filename and a unit instance, so the helper's own 64-character
+  // cap is the only limit that applies.
+  readonly property int maxNameLength: 64
+
   // The extension the profile takes once installed — the unit runs
   // `--config %i.conf`, so this is not a free choice.
   readonly property string configExtension: "conf"

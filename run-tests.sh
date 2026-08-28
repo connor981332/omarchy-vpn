@@ -38,6 +38,7 @@ command -v node >/dev/null || { echo "node is required for the unit tests"; exit
 
 run "Tier 1  Model.js"                node test/model.test.js
 run "Tier 1  OpenVPN config"          node test/config.test.js
+run "Tier 1  WireGuard config"        node test/wireguard-config.test.js
 run "Tier 1  systemd escaping"        ./test/harness/escape.test.sh
 run "         privileged helper"      ./test/helper.test.sh
 run "         architecture"           ./test/architecture.test.sh

@@ -101,21 +101,29 @@ function isLiteralUnitInstance(name) {
 // The profile name is also a filename in a system directory, so it is
 // sanitized rather than escaped: escaping would let a name round-trip through
 // the unit but still write "../../etc/passwd" on disk.
-function sanitizeProfileName(name) {
+// `maxLength` is a backend property, not a constant: one protocol names its
+// interface after the config file and so inherits the kernel's 15-character
+// IFNAMSIZ limit, while the other only needs a filename. Defaults to the
+// privileged helper's own cap so a caller that does not care still cannot
+// produce a name install-profile would refuse.
+function sanitizeProfileName(name, maxLength) {
+  var limit = Number(maxLength) > 0 ? Number(maxLength) : 64
   var value = String(name || "").trim()
   value = value.replace(/\.[Cc][Oo][Nn][Ff]$/, "")
   value = value.replace(/[^A-Za-z0-9._-]+/g, "-")
   value = value.replace(/^[.-]+/, "")
   value = value.replace(/-{2,}/g, "-")
   value = value.replace(/[.-]+$/, "")
-  return value.substring(0, 64)
+  value = value.substring(0, limit)
+  // Truncating can re-expose a trailing separator the pass above removed.
+  return value.replace(/[.-]+$/, "")
 }
 
-function profileNameFromPath(path) {
+function profileNameFromPath(path, maxLength) {
   var raw = String(path || "")
   var base = raw.substring(raw.lastIndexOf("/") + 1)
   base = base.replace(/\.[A-Za-z0-9]+$/, "")
-  return sanitizeProfileName(base)
+  return sanitizeProfileName(base, maxLength)
 }
 
 // ------------------------------------------------------------- tunnel shaping

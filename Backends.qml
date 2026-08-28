@@ -1,5 +1,6 @@
 import QtQuick
 import "backends/openvpn" as OpenVpn
+import "backends/wireguard" as WireGuard
 
 // The backend registry, and the only file outside backends/ that names a
 // protocol.
@@ -11,7 +12,7 @@ import "backends/openvpn" as OpenVpn
 Item {
   id: root
 
-  readonly property var all: [openvpn]
+  readonly property var all: [openvpn, wireguard]
 
   // The backend used when an action is not scoped to a row — the import key,
   // for instance, before any profile exists to select.
@@ -25,4 +26,5 @@ Item {
   }
 
   OpenVpn.Backend { id: openvpn }
+  WireGuard.Backend { id: wireguard }
 }

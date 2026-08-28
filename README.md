@@ -1,18 +1,22 @@
 # VPN — Omarchy bar widget
 
-`connor.vpn`. Import, connect, and monitor OpenVPN tunnels from the Omarchy
-bar, without opening a terminal.
+`connor.vpn`. Import, connect, and monitor OpenVPN and WireGuard tunnels from
+the Omarchy bar, without opening a terminal.
 
-The widget drives the **stock systemd template unit** that ships with the
-`openvpn` package. It installs no daemon, no unit file, and no polkit policy of
-its own — privileged operations authenticate through the polkit agent Omarchy
-already runs.
+The widget drives the **stock systemd template units** that ship with the
+`openvpn` and `wireguard-tools` packages. It installs no daemon, no unit file,
+and no polkit policy of its own — privileged operations authenticate through
+the polkit agent Omarchy already runs.
 
 ## Requirements
 
 | Package | Needed for | In Omarchy's base? |
 |---|---|---|
-| `openvpn` | Everything OpenVPN. Provides `openvpn-client@.service`. | **No — install it** |
+| `openvpn` | OpenVPN profiles. Provides `openvpn-client@.service`. | **No — install it** |
+| `wireguard-tools` | WireGuard profiles. Provides `wg-quick@.service`. | **No — install it** |
+
+You only need the one your profiles use. Neither is probed until you reach for
+it, so a WireGuard-only user is never told about OpenVPN.
 
 Everything else the widget uses is already on every Omarchy install:
 `systemd`, `iproute2` (`ip`), `systemd-resolved` (`resolvectl`), and
@@ -25,7 +29,8 @@ for OpenVPN, never on load.
 
 ```bash
 # If you would rather do it by hand:
-sudo pacman -S --needed openvpn
+sudo pacman -S --needed openvpn          # for OpenVPN profiles
+sudo pacman -S --needed wireguard-tools  # for WireGuard profiles
 ```
 
 ### Optional
@@ -52,7 +57,8 @@ two later commands are correct as written.
 
 ### Importing a profile
 
-Press **＋** next to the OpenVPN heading and pick a `.ovpn` file. The widget:
+Press **＋** next to a protocol's heading and pick a profile — a `.ovpn` file
+for OpenVPN, a `.conf` file for WireGuard. The widget:
 
 1. parses it and refuses anything that is not a client profile;
 2. rewrites every file reference — `ca`, `cert`, `key`, `askpass`, `tls-auth`
@@ -62,7 +68,15 @@ Press **＋** next to the OpenVPN heading and pick a `.ovpn` file. The widget:
 4. asks polkit for permission once, and installs it into
    `/etc/openvpn/client/`.
 
-Your original `.ovpn` is not modified or moved.
+Your original file is not modified or moved.
+
+A WireGuard profile is normally self-contained — its keys are inline — so
+steps 2 and 3 do almost nothing and the config is installed as you wrote it.
+Two things are checked that `wg-quick` would otherwise only complain about
+later: the profile name must fit the kernel's 15-character interface-name
+limit, because `wg-quick` names the interface after the file; and a
+`PostUp`/`PreUp` hook naming an absolute path is looked for on your system
+before anything is installed.
 
 ### Why your profile gets rewritten
 
@@ -196,6 +210,7 @@ are not.
 | `Model.js` | Pure protocol-agnostic logic — no QML types |
 | `VpnIcon.qml` | Canvas-drawn shield mark |
 | `backends/openvpn/` | Everything OpenVPN-specific |
+| `backends/wireguard/` | Everything WireGuard-specific |
 | `bin/install-profile` | The privileged helper, run via `pkexec` |
 | `bin/stage-profile` | Unprivileged staging, run as you |
 | `test/` | The suite; `test/harness/` is the real-tunnel tier |

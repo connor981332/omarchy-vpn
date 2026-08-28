@@ -56,6 +56,56 @@ else
     "$(grep -n 'exitCode' Service.qml | grep -i miss)"
 fi
 
+echo "# the dependency matrix, in both directions"
+# The requirement that survives adding a second backend: a user of one
+# protocol must never be warned about the other's missing binary. With two
+# backends registered this is now testable rather than aspirational.
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/openvpn"; chmod +x "$FAKE/openvpn"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/wg"; chmod +x "$FAKE/wg"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/wg-quick"; chmod +x "$FAKE/wg-quick"
+
+# OpenVPN present, WireGuard absent.
+PATH="$FAKE" "$PROBE" openvpn >/dev/null 2>&1
+a=$?
+PATH="$FAKE" "$PROBE" wg wg-quick >/dev/null 2>&1
+b=$?
+check "with only OpenVPN installed, only WireGuard reads as missing" \
+  $(( a == 1 ? 0 : 1 ))
+rm -f "$FAKE/wg" "$FAKE/wg-quick"
+PATH="$FAKE" "$PROBE" wg wg-quick >/dev/null 2>&1
+check "  ...and it does read as missing" $(( $? == 0 ? 0 : 1 ))
+
+# And the mirror image, which is the case that actually regressed historically:
+# a WireGuard-only user seeing an OpenVPN warning.
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/wg"; chmod +x "$FAKE/wg"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/wg-quick"; chmod +x "$FAKE/wg-quick"
+rm -f "$FAKE/openvpn"
+PATH="$FAKE" "$PROBE" wg wg-quick >/dev/null 2>&1
+check "with only WireGuard installed, WireGuard reads as present" $(( $? == 1 ? 0 : 1 ))
+PATH="$FAKE" "$PROBE" openvpn >/dev/null 2>&1
+check "  ...and OpenVPN is the one reported missing" $(( $? == 0 ? 0 : 1 ))
+
+# A half-installed backend must read as missing, not as present: wireguard-tools
+# ships both binaries, so one without the other is a broken install.
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/wg"; chmod +x "$FAKE/wg"
+rm -f "$FAKE/wg-quick"
+PATH="$FAKE" "$PROBE" wg wg-quick >/dev/null 2>&1
+check "a half-installed backend counts as missing" $(( $? == 0 ? 0 : 1 ))
+
+# Every registered backend must declare what to probe for and what to install,
+# or the card renders with an empty button.
+for field in protocol label packageName commands; do
+  missing=""
+  for backend in backends/*/Backend.qml; do
+    grep -qE "property (string|var|int) $field" "$backend" || missing+=" $backend"
+  done
+  if [[ -z $missing ]]; then
+    check "every backend declares $field" 0
+  else
+    check "every backend declares $field" 1 "$missing"
+  fi
+done
+
 echo "# nothing checks a dependency on load"
 # Every call site of the check, so a new one cannot be added on a load path
 # without this failing.
