@@ -557,10 +557,12 @@ function journalError(text) {
     }
   }
 
-  // Nothing recognised. Fall back to the LAST thing said before the process
-  // died, which is the opposite choice for the opposite reason: with no
-  // pattern to trust, proximity to the failure is the only signal left.
-  return cleanError(lines[lines.length - 1])
+  // Nothing recognised. Fall back to the FIRST thing said, for the same
+  // reason as above: every real failure seen so far prints its cause and then
+  // follows it with advice or teardown. "Proximity to the death" sounds like
+  // the better signal and is not — it picked `run \`resolvconf -u\` to update`
+  // over the `signature mismatch` line that actually explained the failure.
+  return cleanError(lines[0])
 }
 
 // ------------------------------------------------------------------- internals

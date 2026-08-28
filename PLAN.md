@@ -204,7 +204,7 @@ read by the same protocol-agnostic code the OpenVPN side uses.
 
 Two findings from that work:
 
-- **The DNS trap, and it is a big one.** `wg-quick` applies a `DNS =` line by
+- **The DNS trap, and it is a big one — twice over.** `wg-quick` applies a `DNS =` line by
   shelling out to `resolvconf`, which on Arch comes from `openresolv` — an
   **optional** dependency of `wireguard-tools`, absent from Omarchy's base and
   not installed here. Reproduced against real `wg-quick`: it creates the
@@ -214,6 +214,18 @@ Two findings from that work:
   the same look-before-installing machinery as the hook check —
   `plan.commandChecks` carries the command *and* the sentence, because naming
   a package is backend knowledge and `Service.qml` may not do it.
+
+  The second half was worse than the first. The obvious package is
+  `openresolv`, and it is the **wrong** one on this platform: `/etc/resolv.conf`
+  is a symlink to systemd-resolved's stub, openresolv refuses to manage a file
+  it did not create, and `wg-quick` dies on
+  `resolvconf: signature mismatch: /etc/resolv.conf`. Recommending it was
+  worse than not warning at all — the user installed it, the note cleared
+  (the command *was* now present), and the tunnel still failed. The right
+  package is `systemd-resolvconf`, which points `resolvconf` at `resolvectl`;
+  `resolvconf_parse_argv` is in that binary, so the compat interface is real
+  and not a shim we are hoping for. **A command-presence check cannot tell you
+  the command is the right implementation.**
 - **`%I` unescapes and `%i` does not, visibly.** The stock unit's
   `Description=… for %I` renders `harness-wg` as `harness/wg`, because `-`
   unescapes to `/`. `ExecStart` uses `%i`, which does not. This is the

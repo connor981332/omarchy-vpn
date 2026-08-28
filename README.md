@@ -35,16 +35,27 @@ sudo pacman -S --needed wireguard-tools  # for WireGuard profiles
 
 ### Optional
 
-`openresolv` — only for a **WireGuard** profile with a `DNS =` line. `wg-quick`
-applies that setting by shelling out to `resolvconf`, which on Arch comes from
-`openresolv`; it is an *optional* dependency of `wireguard-tools` and is not
+`systemd-resolvconf` — only for a **WireGuard** profile with a `DNS =` line.
+`wg-quick` applies that setting by shelling out to `resolvconf`, which is not
 installed by default. Without it `wg-quick` brings the interface up, fails with
 `resolvconf: command not found`, tears the interface back down and exits 127.
 Most commercial WireGuard profiles set `DNS`, so this is worth knowing —
 importing such a profile warns you about it before anything is installed.
 
 ```bash
-sudo pacman -S --needed openresolv
+sudo pacman -S --needed systemd-resolvconf
+```
+
+**Not `openresolv`.** It is the other package that provides `resolvconf`, and
+on Omarchy it does not work: `/etc/resolv.conf` is a symlink to
+systemd-resolved's stub, and openresolv refuses to manage a file it did not
+create — `resolvconf: signature mismatch: /etc/resolv.conf`, and the tunnel
+fails to start. `systemd-resolvconf` points `resolvconf` at `resolvectl`, which
+speaks the same interface and applies DNS through the resolver actually in
+charge. If you already installed `openresolv`, replace it:
+
+```bash
+sudo pacman -S systemd-resolvconf   # answer yes to removing openresolv
 ```
 
 `curl` — only if you turn on **Show exit IP** (off by default; see Settings).

@@ -179,7 +179,12 @@ t.test("a profile setting DNS asks for resolvconf to be checked", () => {
   const p = C.plan(PROFILE, { name: "wg0" })
   t.eq(p.commandChecks.length, 1)
   t.eq(p.commandChecks[0].command, "resolvconf")
-  t.ok(p.commandChecks[0].warning.indexOf("openresolv") !== -1, "and names the package")
+  t.eq(p.commandChecks[0].packageName, "systemd-resolvconf")
+  // openresolv is the obvious answer and the wrong one: it refuses to manage
+  // a resolv.conf that systemd-resolved owns, so wg-quick exits 1 and the
+  // tunnel dies. Recommending it is worse than not warning at all.
+  t.ok(p.commandChecks[0].packageName !== "openresolv", "not openresolv")
+  t.ok(p.commandChecks[0].warning.indexOf("systemd-resolvconf") !== -1, "and names it")
 })
 
 t.test("a profile without DNS asks for nothing", () => {

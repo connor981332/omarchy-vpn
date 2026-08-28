@@ -487,12 +487,27 @@ t.test("a shell transcript is not mistaken for the reason", () => {
   t.eq(M.journalError(wg), "/usr/bin/wg-quick: line 32: resolvconf: command not found")
 })
 
-t.test("an unrecognised failure falls back to the last thing said", () => {
+t.test("an unrecognised failure falls back to the first thing said", () => {
   t.eq(M.journalError([
     "Starting OpenVPN tunnel for x...",
     "something the daemon has never said before",
     "Failed to start OpenVPN tunnel for x."
   ].join("\n")), "something the daemon has never said before")
+})
+
+t.test("the cause beats the advice that follows it", () => {
+  // Verbatim from a failed wg-quick start. Falling back to the LAST line gave
+  // the user `run \`resolvconf -u\` to update`, which is advice about a
+  // mismatch it does not mention -- the line above is the whole answer.
+  const openresolv = [
+    "Starting WireGuard via wg-quick(8) for demo...",
+    "[#] resolvconf -a demo -m 0 -x",
+    "resolvconf: signature mismatch: /etc/resolv.conf",
+    "resolvconf: run `resolvconf -u` to update",
+    "[#] ip link delete dev demo",
+    "wg-quick@demo.service: Main process exited, code=exited, status=1/FAILURE"
+  ].join("\n")
+  t.eq(M.journalError(openresolv), "resolvconf: signature mismatch: /etc/resolv.conf")
 })
 
 t.test("the job-failed boilerplate keeps its sentence", () => {

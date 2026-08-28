@@ -169,21 +169,32 @@ function plan(text, opts) {
   }
 
   // The DNS trap. wg-quick applies `DNS =` by shelling out to `resolvconf`,
-  // which on Arch comes from openresolv — an *optional* dependency of
-  // wireguard-tools and not in Omarchy's base. Without it wg-quick fails with
-  // `resolvconf: command not found`, deletes the interface it just made, and
-  // exits 127. Nearly every commercial WireGuard profile sets DNS, so this is
-  // the most likely way a stranger's first WireGuard tunnel fails.
+  // which is not installed by default: it comes from an *optional* dependency
+  // of wireguard-tools and is not in Omarchy's base. Without it wg-quick fails
+  // with `resolvconf: command not found`, deletes the interface it just made,
+  // and exits 127. Nearly every commercial WireGuard profile sets DNS, so this
+  // is the most likely way a stranger's first WireGuard tunnel fails.
+  //
+  // WHICH package supplies it matters, and getting this wrong is worse than
+  // not warning at all. openresolv is the obvious answer and the wrong one
+  // here: this platform runs systemd-resolved with /etc/resolv.conf symlinked
+  // to its stub, and openresolv refuses to manage a file it did not create —
+  // `resolvconf: signature mismatch: /etc/resolv.conf`, exit 1, tunnel dead.
+  // systemd-resolvconf points /usr/bin/resolvconf at resolvectl, which speaks
+  // the resolvconf interface natively (`resolvconf_parse_argv` is in the
+  // binary) and applies DNS through the resolver that is actually in charge.
   if (iface && valueOf(iface, "DNS") !== "") {
     commandChecks.push({
       command: "resolvconf",
       // Named here, with the protocol, because which package supplies a
       // command is backend knowledge — Service.qml may not know it.
-      packageName: "openresolv",
-      label: "openresolv",
+      packageName: "systemd-resolvconf",
+      label: "systemd-resolvconf",
       warning: "This profile sets DNS, which wg-quick applies with `resolvconf`, "
         + "and that command is not installed. Without it the tunnel will fail to "
-        + "start. Install openresolv, or remove the DNS line from the profile."
+        + "start. Install systemd-resolvconf, or remove the DNS line from the "
+        + "profile. (Not openresolv — it will not manage a resolv.conf that "
+        + "systemd-resolved owns.)"
     })
   }
 
