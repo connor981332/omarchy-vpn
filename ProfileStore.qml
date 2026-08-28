@@ -21,11 +21,16 @@ Item {
 
   // { name, protocol, endpoint, importedAt, requires }
   //
-  // `requires` is what the profile needs at connect time beyond its backend —
-  // a command supplied by some other package. It is recorded HERE rather than
-  // reported once at import because it is a property of the installed profile,
-  // not of the moment it was installed: the profile stays broken until the
-  // package arrives, across restarts, and the panel has to keep saying so.
+  // `requires` is a list of COMMAND NAMES the profile needs at connect time
+  // beyond its backend. Recorded here rather than reported once at import
+  // because it is a property of the installed profile, not of the moment it
+  // was installed: the profile stays broken until the package arrives, across
+  // restarts, and the panel has to keep saying so.
+  //
+  // Names only. The package and the wording live in the backend, so correcting
+  // them reaches profiles that were imported before the correction — the first
+  // version of this stored the sentence and named the wrong package, which
+  // then survived the fix.
   property var profiles: []
   property bool loaded: false
 
@@ -115,16 +120,14 @@ Item {
   // out of it is trusted to have the right shape.
   function _cleanRequires(list) {
     var out = []
-    if (!(list instanceof Array)) return out
+    if (!list || typeof list === "string" || typeof list.length !== "number") return out
     for (var i = 0; i < list.length; i++) {
-      var item = list[i] || {}
-      if (!item.command || !item.packageName) continue
-      out.push({
-        command: String(item.command),
-        packageName: String(item.packageName),
-        label: String(item.label || item.packageName),
-        warning: String(item.warning || "")
-      })
+      var item = list[i]
+      // An index written by an earlier version stored the whole record. Take
+      // the name out of it rather than discarding the profile's requirement.
+      if (item && typeof item === "object" && item.command) item = item.command
+      if (!item || typeof item !== "string") continue
+      out.push(item)
     }
     return out
   }

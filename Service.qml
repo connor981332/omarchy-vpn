@@ -476,6 +476,14 @@ Item {
     return missingCommands[command] === true
   }
 
+  // The catalogue lives in the backend, so the panel can render a correction
+  // to a package name or its wording against a profile imported before it.
+  function requirementFor(protocol, command) {
+    var backend = backendFor(protocol)
+    if (!backend || !backend.requirementFor) return null
+    return backend.requirementFor(command)
+  }
+
   // Every distinct command the installed profiles say they need.
   function _requiredCommands() {
     var seen = {}
@@ -483,7 +491,7 @@ Item {
     for (var i = 0; i < tunnels.length; i++) {
       var reqs = tunnels[i].requires || []
       for (var j = 0; j < reqs.length; j++) {
-        var name = reqs[j].command
+        var name = reqs[j]
         if (!name || seen[name]) continue
         seen[name] = true
         out.push(name)
@@ -685,8 +693,8 @@ Item {
     for (var h = 0; h < hooks.length; h++) command.push("--hook", hooks[h])
     // Same look-before-installing, for a command resolved through PATH. The
     // backend supplies the name and the sentence; the service only asks.
-    var checks = plan.commandChecks || []
-    for (var c = 0; c < checks.length; c++) command.push("--command", checks[c].command)
+    var checks = plan.requiredCommands || []
+    for (var c = 0; c < checks.length; c++) command.push("--command", checks[c])
 
     actionStatus = "Preparing " + _importName + "…"
     // Re-arm stdin before every run. `stdinEnabled = false` is what sends EOF,
@@ -707,7 +715,6 @@ Item {
   function _warnAboutMissingHooks(output) {
     var lines = String(output).split(/\r?\n/)
     var next = warnings.slice()
-    var checks = (_importPlan && _importPlan.commandChecks) || []
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim()
       if (line.indexOf("missing-hook: ") === 0) {
@@ -717,10 +724,8 @@ Item {
         continue
       }
       if (line.indexOf("missing-command: ") !== 0) continue
-      var name = line.substring("missing-command: ".length)
-      for (var c = 0; c < checks.length; c++) {
-        if (checks[c].command === name) { next.push(checks[c].warning); break }
-      }
+      var found = requirementFor(_importProtocol, line.substring("missing-command: ".length))
+      if (found) next.push(found.warning)
     }
     // Reassign: mutating in place fires no change notification.
     if (next.length !== warnings.length) warnings = next
@@ -1120,7 +1125,7 @@ Item {
           endpoint: root._importPlan ? root._importPlan.endpoint : "",
           // Kept with the profile, not reported once and forgotten: the
           // profile stays broken until the package arrives.
-          requires: root._importPlan ? root._importPlan.commandChecks : []
+          requires: root._importPlan ? root._importPlan.requiredCommands : []
         })
       } else {
         var text = Model.cleanError(String(installErr.text || ""))

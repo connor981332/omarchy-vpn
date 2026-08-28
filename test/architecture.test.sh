@@ -159,6 +159,34 @@ else
   check "only rebuild() constructs a tunnel from scratch" 1 "$bad_makers"
 fi
 
+echo "# advice lives in the backend, not in the profile index"
+# The index stores command names only. Storing the sentence meant the first
+# version of the openresolv advice -- which named the wrong package, and broke
+# every tunnel that followed it -- stayed on disk after the code was fixed.
+if grep -q 'warning:' ProfileStore.qml; then
+  check "the profile index stores no advice text" 1 \
+    "$(grep -n 'warning:' ProfileStore.qml)"
+else
+  check "the profile index stores no advice text" 0
+fi
+
+# And every requirement a backend advertises must be actionable: a note with
+# no package name renders an Install button that installs nothing.
+missing_pkg=""
+for backend in backends/*/Backend.qml; do
+  grep -q 'property var requirements' "$backend" || continue
+  # Anchored to the entry indentation, so the backend's own packageName
+  # property is not counted as one of its requirements.
+  count_cmd="$(grep -cE '^ +command:' "$backend")"
+  count_pkg="$(grep -cE '^ +packageName:' "$backend")"
+  [[ $count_cmd -eq $count_pkg ]] || missing_pkg+=" $backend ($count_cmd commands, $count_pkg packages)"
+done
+if [[ -z $missing_pkg ]]; then
+  check "every advertised requirement names a package" 0
+else
+  check "every advertised requirement names a package" 1 "$missing_pkg"
+fi
+
 echo "# no symlinks — plugin validation rejects them"
 links="$(find . -type l -not -path './.git/*' 2>/dev/null || true)"
 if [[ -z $links ]]; then

@@ -225,7 +225,14 @@ Two findings from that work:
   package is `systemd-resolvconf`, which points `resolvconf` at `resolvectl`;
   `resolvconf_parse_argv` is in that binary, so the compat interface is real
   and not a shim we are hoping for. **A command-presence check cannot tell you
-  the command is the right implementation.**
+  the command is the right implementation.** That hole is left open
+  deliberately — validating an implementation is package-specific logic in a
+  generic mechanism — and the journal reader is the backstop: it now names
+  `resolvconf: signature mismatch: /etc/resolv.conf` when it happens.
+- **Never persist derived advice.** The index stored the whole warning record,
+  so the corrected package name did not reach a profile imported before the
+  fix. The catalogue now lives in `Backend.qml` and the index stores command
+  names only, with a migration for the old shape. Mechanically checked.
 - **`%I` unescapes and `%i` does not, visibly.** The stock unit's
   `Description=… for %I` renders `harness-wg` as `harness/wg`, because `-`
   unescapes to `/`. `ExecStart` uses `%i`, which does not. This is the

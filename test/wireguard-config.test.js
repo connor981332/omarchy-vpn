@@ -177,21 +177,24 @@ t.suite("the DNS trap")
 // like -- which is exactly why this trap is worth catching.
 t.test("a profile setting DNS asks for resolvconf to be checked", () => {
   const p = C.plan(PROFILE, { name: "wg0" })
-  t.eq(p.commandChecks.length, 1)
-  t.eq(p.commandChecks[0].command, "resolvconf")
-  t.eq(p.commandChecks[0].packageName, "systemd-resolvconf")
-  // openresolv is the obvious answer and the wrong one: it refuses to manage
-  // a resolv.conf that systemd-resolved owns, so wg-quick exits 1 and the
-  // tunnel dies. Recommending it is worse than not warning at all.
-  t.ok(p.commandChecks[0].packageName !== "openresolv", "not openresolv")
-  t.ok(p.commandChecks[0].warning.indexOf("systemd-resolvconf") !== -1, "and names it")
+  t.eq(p.requiredCommands.length, 1)
+  t.eq(p.requiredCommands[0], "resolvconf")
+})
+
+t.test("the parser reports the name and no advice", () => {
+  // Which package supplies the command, and what to tell the user, live in
+  // Backend.qml. Storing the sentence in the index meant the first version of
+  // this advice -- which named the wrong package -- survived the fix.
+  const p = C.plan(PROFILE, { name: "wg0" })
+  t.eq(typeof p.requiredCommands[0], "string")
+  t.eq(p.commandChecks, undefined, "no advice comes out of the parser")
 })
 
 t.test("a profile without DNS asks for nothing", () => {
   // The check must not fire for every profile, or the warning stops meaning
   // anything and a working import grows a scary message.
   const noDns = PROFILE.split("\n").filter(l => l.indexOf("DNS") !== 0).join("\n")
-  t.eq(C.plan(noDns, { name: "wg0" }).commandChecks.length, 0)
+  t.eq(C.plan(noDns, { name: "wg0" }).requiredCommands.length, 0)
 })
 
 t.test("the DNS check is not an import error", () => {

@@ -491,7 +491,9 @@ Panel {
                     RequirementNote {
                       required property var modelData
                       width: tunnelItem.width
-                      requirement: modelData
+                      command: modelData
+                      requirement: vpn.requirementFor(tunnelItem.modelData.protocol,
+                                                      modelData)
                     }
                   }
                 }
@@ -616,12 +618,13 @@ Panel {
   // a working backend look uninstalled.
   component RequirementNote: Column {
     id: note
+    property string command: ""
     property var requirement: null
 
     readonly property bool missing: note.requirement
-      && vpn.isCommandMissing(note.requirement.command)
+      && vpn.isCommandMissing(note.command)
     readonly property bool waiting: note.requirement
-      && vpn.requirementWatch === note.requirement.command
+      && vpn.requirementWatch === note.command
 
     visible: note.missing
     spacing: Style.space(6)
@@ -644,14 +647,14 @@ Panel {
           : "Install " + (note.requirement ? note.requirement.label : "")
         enabled: !note.waiting
         opacity: enabled ? 1.0 : 0.5
-        onClicked: vpn.installRequirement(note.requirement.command,
+        onClicked: vpn.installRequirement(note.command,
                                           note.requirement.packageName,
                                           note.requirement.label)
       }
 
       Button {
         text: "Re-check"
-        onClicked: vpn.recheckRequirement(note.requirement.command)
+        onClicked: vpn.recheckRequirement(note.command)
       }
     }
   }

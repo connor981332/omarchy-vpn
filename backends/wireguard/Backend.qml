@@ -33,6 +33,37 @@ QtObject {
   // every telemetry read downstream would follow the wrong interface.
   readonly property var devicePrefixes: []
 
+  // Things a profile may need beyond this backend, looked up by command name.
+  //
+  // The catalogue lives here, and the profile index stores only the command
+  // name, so a correction to the package or the wording reaches profiles that
+  // were imported before it. Persisting the sentence meant the first version
+  // of this advice — which named the wrong package — stayed on disk after the
+  // code was fixed.
+  readonly property var requirements: [
+    {
+      command: "resolvconf",
+      // NOT openresolv. It also provides `resolvconf`, and it refuses to
+      // manage the /etc/resolv.conf symlink systemd-resolved owns: wg-quick
+      // dies on `resolvconf: signature mismatch`. systemd-resolvconf points
+      // resolvconf at resolvectl, which implements the interface itself.
+      packageName: "systemd-resolvconf",
+      label: "systemd-resolvconf",
+      warning: "This profile sets DNS, which wg-quick applies with `resolvconf`, "
+        + "and that command is not installed. Without it the tunnel will fail to "
+        + "start. Install systemd-resolvconf, or remove the DNS line from the "
+        + "profile. (Not openresolv — it will not manage a resolv.conf that "
+        + "systemd-resolved owns.)"
+    }
+  ]
+
+  function requirementFor(command) {
+    for (var i = 0; i < requirements.length; i++) {
+      if (requirements[i].command === command) return requirements[i]
+    }
+    return null
+  }
+
   readonly property string fileExtensions: "conf"
   readonly property string importTitle: "Import a WireGuard profile"
   readonly property string configExtension: "conf"
