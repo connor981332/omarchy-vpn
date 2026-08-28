@@ -330,4 +330,30 @@ t.test("a bare command name is not treated as a path", () => {
   t.eq(p.hookTargets.length, 0)
 })
 
+t.suite("endpoint transport")
+
+// Only the kill switch reads this, and it reads it to permit exactly the
+// tunnel's own traffic. Getting it wrong blocks the connection it is
+// protecting, which looks like a routing problem rather than a firewall one.
+t.test("udp is the default, as OpenVPN's own is", () => {
+  t.eq(C.plan("client\nremote vpn.example.com 1194\n", { name: "a" }).endpointProto, "udp")
+})
+
+t.test("a global proto directive is read", () => {
+  t.eq(C.plan("client\nproto tcp\nremote vpn.example.com 443\n", { name: "a" }).endpointProto, "tcp")
+})
+
+t.test("a third argument on remote overrides the global proto", () => {
+  t.eq(C.plan("client\nproto udp\nremote vpn.example.com 443 tcp\n", { name: "a" }).endpointProto,
+       "tcp")
+})
+
+t.test("the -client and -server suffixes reduce to the wire protocol", () => {
+  // `tcp-client`, `udp6` and `tcp4` are all things a real profile says, and
+  // none of them are what nftables calls the protocol.
+  t.eq(C.plan("client\nproto tcp-client\nremote h 443\n", { name: "a" }).endpointProto, "tcp")
+  t.eq(C.plan("client\nproto udp6\nremote h 1194\n", { name: "a" }).endpointProto, "udp")
+  t.eq(C.plan("client\nproto tcp4\nremote h 443\n", { name: "a" }).endpointProto, "tcp")
+})
+
 t.done()

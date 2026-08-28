@@ -1,0 +1,249 @@
+#!/bin/bash
+#
+# The plugin's second privileged helper. Invoked as
+# `pkexec /path/to/killswitch <verb> ...`, so it authenticates through the
+# running polkit agent and holds no persistent privilege.
+#
+# It is separate from install-profile on purpose. That script is about
+# profiles and its header promises everything it does is deliberately dumb;
+# this one can take the machine off the network. pkexec authorizes per
+# invocation either way, so folding them together would buy no privilege
+# separation and would cost the reader an accurate name.
+#
+# Usage:
+#   killswitch on <device> <endpoint> <port> <proto>
+#   killswitch off
+#   killswitch status
+#
+# RECOVERY. If the shell dies while this is armed there is no UI and no
+# network. Two ways back, both documented in the README:
+#   pkexec /path/to/killswitch off
+#   ...or reboot. Nothing is written to /etc/nftables.conf, so in-kernel rules
+#   never survive one. That is deliberate.
+
+set -euo pipefail
+
+TABLE="connor_vpn_killswitch"
+FAMILY="inet"
+STATE_DIR="/run/connor-vpn"
+STATE_FILE="$STATE_DIR/killswitch"
+
+die() {
+  echo "killswitch: $*" >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------- validation
+#
+# The caller is unprivileged and therefore untrusted. Every one of these ends
+# up inside an nft script, so a value that escaped its rule could write any
+# rule at all — validation here is the whole security boundary.
+
+validate_device() {
+  local dev="$1"
+  [[ -n $dev ]] || die "empty device name"
+  # IFNAMSIZ is 16 including the NUL, so 15 characters is the kernel's limit.
+  [[ ${#dev} -le 15 ]] || die "device name too long"
+  [[ $dev =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid device name '$dev'"
+}
+
+validate_port() {
+  local port="$1"
+  [[ $port =~ ^[0-9]+$ ]] || die "invalid port '$port'"
+  [[ $port -ge 1 && $port -le 65535 ]] || die "port out of range '$port'"
+}
+
+validate_proto() {
+  case "$1" in
+    udp | tcp) ;;
+    *) die "invalid protocol '$1' — expected udp or tcp" ;;
+  esac
+}
+
+# A hostname or an address literal. Anything else is refused rather than
+# passed to a resolver, so the resolver is never handed our caller's input in
+# a shape we have not looked at.
+validate_endpoint() {
+  local host="$1"
+  [[ -n $host ]] || die "empty endpoint"
+  [[ ${#host} -le 253 ]] || die "endpoint too long"
+  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9.:_-]*$ ]] || die "invalid endpoint '$host'"
+}
+
+# Resolve to addresses, and refuse to arm if nothing comes back: a set with no
+# elements would silently block the tunnel it is supposed to protect.
+resolve_endpoint() {
+  local host="$1" line addr
+  local -a found=()
+
+  if [[ $host =~ ^[0-9.]+$ || $host == *:* ]]; then
+    found+=("$host")
+  else
+    while read -r line; do
+      addr="${line%% *}"
+      [[ -n $addr ]] && found+=("$addr")
+    done < <(getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u)
+  fi
+
+  [[ ${#found[@]} -gt 0 ]] || die "could not resolve endpoint '$host'"
+  printf '%s\n' "${found[@]}"
+}
+
+# ---------------------------------------------------------------------- verbs
+
+cmd_on() {
+  local device="${1-}" endpoint="${2-}" port="${3-}" proto="${4-}"
+  [[ -n $device && -n $endpoint && -n $port && -n $proto ]] \
+    || die "usage: on <device> <endpoint> <port> <proto>"
+  validate_device "$device"
+  validate_endpoint "$endpoint"
+  validate_port "$port"
+  validate_proto "$proto"
+
+  command -v nft >/dev/null 2>&1 || die "nft is not installed"
+
+  local v4="" v6="" addr
+  while read -r addr; do
+    if [[ $addr == *:* ]]; then
+      v6+="${v6:+, }$addr"
+    else
+      v4+="${v4:+, }$addr"
+    fi
+  done < <(resolve_endpoint "$endpoint")
+
+  # Built here rather than inline: `${v6:+elements = { $v6 }}` does not brace-
+  # match reliably when the value is empty, and it emits a stray `}` that
+  # derails the parser twenty lines later with an error pointing at the wrong
+  # rule.
+  local set4="" set6=""
+  if [[ -n $v4 ]]; then set4="elements = { $v4 }"; fi
+  if [[ -n $v6 ]]; then set6="elements = { $v6 }"; fi
+
+  # `table` then `delete table` makes the whole thing idempotent: the first
+  # line creates it if it is missing so the second always has something to
+  # remove, and nft applies the file as one transaction — so a syntax error
+  # anywhere leaves the previous state untouched rather than half a ruleset.
+  #
+  # policy drop on both base chains: anything the guard does not explicitly
+  # accept is blocked. A rule we forgot should cost connectivity, never
+  # privacy.
+  nft -f - <<NFT
+table $FAMILY $TABLE
+delete table $FAMILY $TABLE
+table $FAMILY $TABLE {
+  set endpoints4 {
+    type ipv4_addr
+    $set4
+  }
+  set endpoints6 {
+    type ipv6_addr
+    $set6
+  }
+
+  chain guard {
+    oifname "lo" accept
+    oifname "$device" accept
+
+    ip daddr @endpoints4 $proto dport $port counter accept comment "endpoint"
+    ip6 daddr @endpoints6 $proto dport $port counter accept comment "endpoint6"
+
+    # Above the LAN pass on purpose: allowing the local network would
+    # otherwise re-open DNS to the router, and every query with it. Traffic
+    # inside the tunnel was already accepted by oifname two rules up.
+    meta l4proto { tcp, udp } th dport { 53, 853 } counter drop comment "dns"
+
+    udp sport 68 udp dport 67 accept comment "dhcp"
+    udp sport 546 udp dport 547 accept comment "dhcp6"
+
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } counter accept comment "lan"
+    ip6 daddr { fe80::/10, ff00::/8, fc00::/7 } counter accept comment "lan6"
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept comment "nd"
+
+    counter comment "blocked"
+  }
+
+  chain output {
+    type filter hook output priority filter; policy drop;
+    jump guard
+  }
+
+  # Docker is in Omarchy's base packages, so a container routing out through
+  # the host is a real leak path on a stock machine.
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    jump guard
+  }
+}
+NFT
+
+  # The unprivileged mirror. `nft list` needs CAP_NET_ADMIN, so without this
+  # the widget could not see its own rules without prompting every poll. The
+  # table stays the source of truth; this is what the panel reads.
+  mkdir -p "$STATE_DIR"
+  chmod 0755 "$STATE_DIR"
+  local tmp
+  tmp="$(mktemp "$STATE_DIR/.killswitch.XXXXXX")"
+  # shellcheck disable=SC2064  # $tmp is expanded now on purpose.
+  trap "rm -f -- '$tmp'" EXIT
+  {
+    echo "armed=1"
+    echo "device=$device"
+    echo "endpoint=$endpoint"
+    echo "port=$port"
+    echo "proto=$proto"
+    echo "since=$(date +%s)"
+  } > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$STATE_FILE"
+  trap - EXIT
+
+  echo "armed $device -> $endpoint:$port/$proto"
+}
+
+cmd_off() {
+  command -v nft >/dev/null 2>&1 || die "nft is not installed"
+
+  # Already off is a success, not an error. This is the recovery path, and a
+  # recovery command that fails when the thing is already fixed is a command
+  # people stop trusting.
+  nft delete table "$FAMILY" "$TABLE" >/dev/null 2>&1 || true
+  rm -f -- "$STATE_FILE"
+
+  echo "disarmed"
+}
+
+# Reads the table, not the marker: this is what the tests and the recovery
+# path use, so it has to answer from reality even if the mirror is stale.
+cmd_status() {
+  command -v nft >/dev/null 2>&1 || die "nft is not installed"
+
+  if nft list table "$FAMILY" "$TABLE" >/dev/null 2>&1; then
+    echo "armed=1"
+    if [[ -f $STATE_FILE ]]; then
+      grep -E '^(device|endpoint|port|proto|since)=' "$STATE_FILE" || true
+    fi
+    # The fall-through counter is the only honest measure of what the switch
+    # has actually stopped, so it is reported rather than inferred.
+    local blocked
+    blocked="$(nft list table "$FAMILY" "$TABLE" 2>/dev/null \
+      | awk '/comment "blocked"/ { for (i = 1; i < NF; i++) if ($i == "packets") print $(i + 1) }')"
+    echo "blocked=${blocked:-0}"
+  else
+    echo "armed=0"
+    # A marker with no table is the one inconsistency worth repairing: it
+    # would leave the panel claiming a protection that is not there.
+    rm -f -- "$STATE_FILE"
+  fi
+}
+
+# ------------------------------------------------------------------- dispatch
+
+verb="${1-}"
+shift || true
+
+case "$verb" in
+  on) cmd_on "$@" ;;
+  off) cmd_off "$@" ;;
+  status) cmd_status "$@" ;;
+  *) die "usage: killswitch {on|off|status} ..." ;;
+esac

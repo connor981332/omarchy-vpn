@@ -29,10 +29,16 @@ running `omarchy.polkit` agent and is retained for the session.
 for a future WireGuard backend. The OpenVPN management socket is root-owned,
 which is why negotiated cipher and reconnect count are not here.
 
-### Privileged operations — exactly two
+### Privileged operations — exactly three
 1. `systemctl start/stop <unit>` — stock polkit action.
 2. `pkexec bin/install-profile` — install, remove, or list a profile in
-   `/etc/openvpn/client/`.
+   `/etc/openvpn/client/`, and store or clear its credentials.
+3. `pkexec bin/killswitch` — add or remove one nftables table.
+
+Two helpers rather than one on purpose. `install-profile` is about profiles;
+`killswitch` can take the machine off the network. pkexec authorizes per
+invocation either way, so folding them together would buy no privilege
+separation and would cost the reader an accurate name.
 
 ### File map
 
@@ -48,6 +54,7 @@ which is why negotiated cipher and reconnect count are not here.
 | `backends/openvpn/Config.js` | `.ovpn` parsing and rewriting. |
 | `bin/install-profile` | Privileged helper. Untrusted caller — validates everything. |
 | `bin/stage-profile` | Unprivileged staging, runs as the user. |
+| `bin/killswitch` | The nftables helper. Owns the rules, and the recovery path. |
 
 ## The three constraints that shaped this
 
@@ -105,7 +112,9 @@ personal PiVPN setup, and it was briefly treated as ambient.
 The only guarantee is `/usr/share/omarchy/install/omarchy-base.packages`
 (149 lines, present on every Omarchy install). Verify against that file.
 
-Known-good: `networkmanager`, `python-gobject`, `nftables` (transitively).
+Known-good: `networkmanager`, `python-gobject`, `nftables` (transitively —
+`ufw` is in base, `ufw` needs `iptables`, `iptables` needs `nftables`; `docker`
+requires it too, and Omarchy configures ufw in `install/config/firewall.sh`).
 NOT in base: `openvpn`, `wireguard-tools`.
 
 **Omarchy has no plugin dependency mechanism at all.** `manifest.json` has no
@@ -164,6 +173,18 @@ omarchy-install-app "Name" pkg…   # themed floating terminal, runs omarchy-pkg
   destination directory is chosen inside the helper from a protocol token, the
   profile name must match a strict pattern, and the staging directory may
   contain only regular files. Changing any of those needs a test.
+- **The kill switch is fail-closed and never disarms itself.** Both base
+  chains are `policy drop`, and the only two paths that take the rules down
+  are the user asking and a stop the user asked for — a tunnel that falls over
+  leaves them standing, which is the entire difference between a kill switch
+  and a decoration. `_disarmAfterStop` is what tells the two apart, and it has
+  to be set as it happens because nothing afterwards can distinguish them.
+  Mechanically checked, along with the `inet` family (an IPv6 leak is how these
+  fail invisibly) and the fact that the DNS drop sits *above* the LAN accept —
+  reversed, every query still reaches the router and the rule set looks
+  correct while doing it.
+- **Nothing writes `/etc/nftables.conf`.** A reboot must always restore
+  connectivity, because it is the last recovery path there is. Also checked.
 - **Settings writes** go through `persistSettings()` in `Panel.qml`: apply
   locally first, then `bar.shell.updateEntryInline`. With no writable entry it
   degrades to session-only, which is intended.
@@ -233,6 +254,24 @@ the value: assigning a `FileView` the path it already holds triggers no read,
 so re-importing the same file sits at "Reading…" forever. Both are pinned by
 `test/architecture.test.sh`. **When a symptom is "worked once, then hung",
 look for an assignment that is a no-op the second time.**
+
+**nftables can be tested without root, too, and this is the big one.**
+`unshare --user --map-root-user --net` gives a private network namespace with
+its own complete ruleset. Every kill-switch rule is therefore developed and
+asserted against real interfaces and real packet counters with no `sudo`
+anywhere and the host's ruleset never touched — which matters more here than
+anywhere else in this project, since the thing under test takes machines off
+the network. `test/killswitch.test.sh` runs in the default suite for exactly
+that reason; it is not a Tier 2.
+
+Assert on **counters, not on rule text**. A rule set that reads correctly and
+drops the tunnel's own handshake is the failure worth catching, and only a
+packet can tell you. Two traps found writing it: without an IPv6 address and
+route in the namespace the kernel refuses the v6 ping before a packet exists,
+so the leak assertion passes having tested nothing; and the inner shell's TAP
+must be captured and tallied by the outer one, with the assertion *count*
+itself asserted — otherwise a namespace that exits early looks exactly like
+one where everything passed.
 
 **A tunnel can be tested without root, using a user namespace.**
 

@@ -104,6 +104,19 @@ Panel {
       root.bar.shell.updateEntryInline(root.moduleName, entry)
   }
 
+  // The preference and the rules move together. Persisting alone would leave
+  // the machine unprotected until the next connect; arming alone would come
+  // undone on the next one. Neither half on its own is what the switch was
+  // asked to do.
+  function setKillSwitch(on) {
+    persistSettings({ killSwitch: on })
+    if (!on) {
+      vpn.disarmKillswitch()
+    } else if (vpn.activeTunnel) {
+      vpn.armKillswitch(vpn.activeTunnel)
+    }
+  }
+
   function ensureCursor() {
     if (cursorIndex > rows.length - 1) cursorIndex = rows.length - 1
     if (cursorIndex < -1) cursorIndex = -1
@@ -337,6 +350,48 @@ Panel {
             }
           }
 
+          // The kill switch, whenever it is armed — including, and especially,
+          // when nothing is connected. That is the state where the machine has
+          // no internet and the cause is a setting turned on in some earlier
+          // session, so it is stated in full and given its own way out rather
+          // than being left for the user to deduce.
+          Column {
+            id: killswitchBanner
+            visible: vpn.killswitchArmed
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator { foreground: root.foreground }
+
+            Text {
+              width: killswitchBanner.width
+              text: (vpn.connected ? "🛡 " : "⚠ ") + vpn.killswitchText
+              color: vpn.connected ? root.foreground : root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: !vpn.connected
+              width: killswitchBanner.width
+              text: "If this window is not available, `pkexec ~/.config/omarchy/plugins/"
+                + "connor.vpn/bin/killswitch off` turns it off from a terminal. Rebooting "
+                + "clears it too — nothing is written to the firewall's config file."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Button {
+              text: "Turn the kill switch off"
+              enabled: !vpn.busy
+              opacity: enabled ? 1.0 : 0.5
+              onClicked: root.setKillSwitch(false)
+            }
+          }
+
           // Live stats for the active tunnel. Tier 1 answers "am I actually
           // protected?", Tier 2 is session facts. The physical-interface
           // numbers belong to the built-in network widget; everything here is
@@ -365,6 +420,38 @@ Panel {
               // The silent failure mode: the link is up but traffic is not
               // using it. Worth shouting about.
               alert: !stats.telemetry.defaultRoute
+            }
+
+            // Two things at once, deliberately: the preference that arms it on
+            // every connect, and the rules that are up right now. Keeping them
+            // as one control is the honest shape — a switch that said "on"
+            // while nothing was blocking would be worse than no switch.
+            Item {
+              width: stats.width
+              implicitHeight: Math.max(killswitchLabel.implicitHeight,
+                                       killswitchToggle.implicitHeight)
+
+              Text {
+                id: killswitchLabel
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.round(parent.width * 0.6)
+                text: "Kill switch"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              ToggleSwitch {
+                id: killswitchToggle
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                checked: vpn.killswitchArmed
+                busy: vpn.busy
+                foreground: root.foreground
+                onToggled: root.setKillSwitch(!vpn.killswitchArmed)
+              }
             }
 
             StatRow {

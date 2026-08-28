@@ -129,6 +129,53 @@ Be clear about what that does and does not protect:
 WireGuard profiles carry their keys inline and never ask for any of this, so
 they are never offered the fields.
 
+### The kill switch
+
+With the kill switch on, nothing leaves your machine except through the
+tunnel. Turn it on with the **Kill switch** toggle in the panel, under the
+tunnel's stats.
+
+What stays allowed, deliberately:
+
+- **Your local network.** Printers, a NAS, another machine on your desk — all
+  still reachable. A kill switch that cut those off would be turned off within
+  the day.
+- **The tunnel's own traffic to your VPN server**, which has to leave outside
+  the tunnel or nothing could connect at all.
+- **DHCP**, so you keep your address on the network.
+
+What is blocked: everything else, including IPv6 and including traffic from
+Docker containers. **DNS to your router is blocked too**, even though the rest
+of your local network is allowed — otherwise every name you looked up would
+still be visible to your ISP, which is most of what a VPN is for.
+
+**If the tunnel drops, traffic stays blocked.** That is the point. Turning the
+switch off, or disconnecting on purpose, is what lifts it.
+
+#### Turning it off when you cannot reach the panel
+
+If the shell crashes while the kill switch is on, you have no window and no
+internet. Two ways back:
+
+```bash
+pkexec ~/.config/omarchy/plugins/connor.vpn/bin/killswitch off
+```
+
+Or **reboot**. The rules live only in the kernel — this widget never writes to
+`/etc/nftables.conf`, so a restart always clears them. That is a deliberate
+guarantee, not a side effect.
+
+#### What it does to your firewall
+
+It adds one nftables table, `inet connor_vpn_killswitch`, and touches nothing
+else. If you run `ufw` (Omarchy sets it up by default) or Docker, their rules
+are left exactly as they are, and turning the switch off removes only our
+table. You can see it with:
+
+```bash
+sudo nft list table inet connor_vpn_killswitch
+```
+
 ### Why your profile gets rewritten
 
 `openvpn-client@.service` sets `ProtectHome=true`, so the service sees an empty
@@ -190,6 +237,7 @@ Per-widget settings live in the widget's entry in `~/.config/omarchy/shell.json`
 | `refreshIntervalSec` | integer | `15` | How often to poll unit state |
 | `hideWhenDisconnected` | boolean | `false` | Hide the bar icon while no VPN is up |
 | `showExitIp` | boolean | `false` | Show the exit IP — **see the privacy note** |
+| `killSwitch` | boolean | `false` | Arm the kill switch whenever a tunnel comes up |
 | `lastTunnelId` | string | `""` | Written by the widget; the right-click target |
 
 ### Privacy note on `showExitIp`
@@ -230,6 +278,21 @@ and rebuilds the index from what is actually installed.
 **A profile is listed but starting it says the config is missing.** Same fix:
 press **⟳**.
 
+**No internet, and the panel says the kill switch is on.** That is the kill
+switch doing its job — it stays on when a tunnel drops, on purpose. Turn it
+off with the button in the panel, or from a terminal:
+
+```bash
+pkexec ~/.config/omarchy/plugins/connor.vpn/bin/killswitch off
+```
+
+Rebooting also clears it.
+
+**Names do not resolve while the kill switch is on and a tunnel is up.** Your
+profile is probably not pushing DNS servers — check the DNS row in the panel.
+The kill switch blocks DNS to your router deliberately, so a tunnel that
+supplies no resolver of its own leaves nothing to ask.
+
 ## Removing it
 
 ```bash
@@ -268,6 +331,7 @@ are not.
 | `backends/wireguard/` | Everything WireGuard-specific |
 | `bin/install-profile` | The privileged helper, run via `pkexec` |
 | `bin/stage-profile` | Unprivileged staging, run as you |
+| `bin/killswitch` | The nftables helper, run via `pkexec` |
 | `test/` | The suite; `test/harness/` is the real-tunnel tier |
 
 ## Authorship

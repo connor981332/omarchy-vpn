@@ -202,4 +202,14 @@ t.test("the DNS check is not an import error", () => {
   t.eq(C.plan(PROFILE, { name: "wg0" }).errors.length, 0)
 })
 
+t.suite("endpoint transport")
+
+t.test("WireGuard is always udp", () => {
+  // There is no configuration that changes it, so the kill switch never has
+  // to ask -- but the field has to be there, because the caller reads it
+  // without knowing which backend produced the plan.
+  const plan = C.plan(PROFILE, { name: "wg0" })
+  t.eq(plan.endpointProto, "udp")
+})
+
 t.done()

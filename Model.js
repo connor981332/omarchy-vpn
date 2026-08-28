@@ -140,6 +140,9 @@ function makeTunnel(fields) {
     protocol: protocol,
     unit: String(f.unit || ""),
     endpoint: String(f.endpoint || ""),
+    // Which transport the tunnel dials out on. Only the kill switch reads it,
+    // and only to permit exactly the traffic the tunnel itself needs.
+    endpointProto: String(f.endpointProto || "udp"),
     state: String(f.state || "down"),
     device: String(f.device || ""),
     path: String(f.path || ""),
@@ -594,6 +597,61 @@ function _translate(message) {
     if (_JOURNAL_TRANSLATIONS[i][0].test(message)) return _JOURNAL_TRANSLATIONS[i][1]
   }
   return message
+}
+
+// ---------------------------------------------------------------- kill switch
+
+// The kill switch's rules live in the kernel, where an unprivileged process
+// cannot see them: `nft list` needs CAP_NET_ADMIN. The privileged helper
+// therefore mirrors its own state into /run/connor-vpn/killswitch, and this
+// reads that mirror. Same format either way, so `killswitch status` output
+// parses with the same function as the marker file.
+//
+// Absent, empty or unreadable all mean the same thing and must: the marker
+// lives on a tmpfs and is gone after a reboot, which is exactly when the
+// rules are gone too.
+function parseKillswitch(text) {
+  var out = {
+    armed: false, device: "", endpoint: "", port: "", proto: "", since: 0,
+    blocked: 0
+  }
+  var lines = String(text || "").split(/\r?\n/)
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (line === "" || line.charAt(0) === "#") continue
+    var eq = line.indexOf("=")
+    if (eq < 1) continue
+    var key = line.substring(0, eq).trim()
+    var value = line.substring(eq + 1).trim()
+    if (key === "armed") out.armed = value === "1" || value === "true"
+    else if (key === "device") out.device = value
+    else if (key === "endpoint") out.endpoint = value
+    else if (key === "port") out.port = value
+    else if (key === "proto") out.proto = value
+    else if (key === "since") out.since = parseInt(value, 10) || 0
+    else if (key === "blocked") out.blocked = parseInt(value, 10) || 0
+  }
+  return out
+}
+
+// The sentence the panel shows. The state that needs saying out loud is armed
+// with nothing connected: the machine has no internet and the reason is a
+// setting the user turned on some time ago, possibly in another session.
+function killswitchText(killswitch, tunnelUp) {
+  if (!killswitch || !killswitch.armed) return ""
+  if (tunnelUp) return "Kill switch on — traffic is confined to the tunnel."
+  return "Kill switch on and no tunnel — everything except your local network is blocked."
+}
+
+// Whether the rules still describe the tunnel that is actually up. The
+// endpoint is pinned by address at arm time, so a reconnect that resolves
+// somewhere else would deadlock; the device can change too, when a tunnel
+// comes back as tun1. Either means re-arm.
+function killswitchStale(killswitch, tunnel) {
+  if (!killswitch || !killswitch.armed) return false
+  if (!tunnel) return false
+  if (String(tunnel.device || "") === "") return false
+  return String(killswitch.device) !== String(tunnel.device)
 }
 
 // ------------------------------------------------------------------- internals

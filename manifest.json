@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "connor.vpn",
   "name": "VPN",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Connor Bunch",
   "license": "MIT",
   "description": "OpenVPN and WireGuard status, connect/disconnect, profile import, and tunnel-scoped stats in the Omarchy bar.",
@@ -22,6 +22,7 @@
       "refreshIntervalSec": 15,
       "hideWhenDisconnected": false,
       "showExitIp": false,
+      "killSwitch": false,
       "lastTunnelId": ""
     },
     "schema": [
@@ -44,6 +45,12 @@
         "key": "showExitIp",
         "type": "boolean",
         "label": "Show exit IP (contacts an external service)",
+        "defaultValue": false
+      },
+      {
+        "key": "killSwitch",
+        "type": "boolean",
+        "label": "Kill switch: block all traffic outside the tunnel",
         "defaultValue": false
       }
     ]

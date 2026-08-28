@@ -98,6 +98,17 @@ Item {
   property string _credentialName: ""
   property bool _credentialPresent: false
 
+  // ---- kill switch ----
+  // The rules live in the kernel and `nft list` needs CAP_NET_ADMIN, so this
+  // is read from the marker the privileged helper writes. Never assumed:
+  // absent means disarmed, which is also what a reboot leaves behind.
+  property var killswitch: Model.parseKillswitch("")
+  // True only while a stop the user actually asked for is in flight. An
+  // unexpected drop must leave the rules standing — that is the whole point
+  // of a kill switch — so the two cases can never be told apart after the
+  // fact and have to be distinguished here, as it happens.
+  property bool _disarmAfterStop: false
+
   property string _importProtocol: ""
   property string _importPath: ""
   property string _importName: ""
@@ -118,11 +129,15 @@ Item {
   readonly property string statusText: Model.statusText(sortedTunnels, _pendingName())
   readonly property bool busy: stateProcess.running || linkProcess.running
     || actionProcess.running || importProcess.running || installProcess.running
-    || chooserProcess.running || listProcess.running
+    || chooserProcess.running || listProcess.running || killswitchProcess.running
 
   readonly property int refreshIntervalSec: _intSetting("refreshIntervalSec", 15, 5, 3600)
   readonly property bool hideWhenDisconnected: _setting("hideWhenDisconnected", false) === true
   readonly property bool exitIpEnabled: _setting("showExitIp", false) === true
+  readonly property bool killSwitchEnabled: _setting("killSwitch", false) === true
+
+  readonly property bool killswitchArmed: killswitch && killswitch.armed === true
+  readonly property string killswitchText: Model.killswitchText(killswitch, connected)
 
   signal profilesChanged()
 
@@ -207,6 +222,7 @@ Item {
         protocol: entry.protocol,
         unit: unit,
         endpoint: entry.endpoint,
+        endpointProto: entry.endpointProto,
         requires: entry.requires,
         needsCredentials: entry.needsCredentials,
         hasCredentials: entry.hasCredentials,
@@ -231,6 +247,9 @@ Item {
     // carries the timestamp the duration row needs, and because it labels each
     // block with the unit's own Id — so a unit systemd declines to describe
     // cannot shift every state onto the wrong row.
+    // Two sysfs-cheap reads a tick: the marker is on a tmpfs and is four
+    // lines long.
+    killswitchFile.reload()
     stateProcess.command = ["systemctl", "show",
                             "-p", "Id", "-p", "ActiveState",
                             "-p", "ActiveEnterTimestampMonotonic"].concat(units)
@@ -339,6 +358,9 @@ Item {
     _deviceFor = assignments
     tunnels = next
     _settlePending()
+    // Last, and only here: the device names are what the rules are built
+    // from, so anything earlier would arm against a device that is not up.
+    _maintainKillswitch()
   }
 
   function _settlePending() {
@@ -394,6 +416,9 @@ Item {
 
   function disconnectTunnel(tunnel) {
     if (!tunnel || actionProcess.running) return
+    // A stop the user asked for takes the rules down with it. An unexpected
+    // drop does not — see _maintainKillswitch().
+    _disarmAfterStop = killswitchArmed
     _pendingId = tunnel.id
     _pendingUp = false
     lastError = ""
@@ -829,6 +854,67 @@ Item {
     credentialProcess.running = true
   }
 
+  // ------------------------------------------------------------- kill switch
+  //
+  // Arming is a privileged operation and a visible one: it can take the
+  // machine off the network, so it is never silent and never inferred. The
+  // README documents `pkexec .../bin/killswitch off` as the way back if the
+  // shell is not there to offer the button.
+
+  function armKillswitch(tunnel) {
+    if (!tunnel || killswitchProcess.running) return
+    // The endpoint is "host:port". Without one there is nothing to permit,
+    // and arming anyway would block the tunnel it is meant to protect.
+    var endpoint = String(tunnel.endpoint || "")
+    var cut = endpoint.lastIndexOf(":")
+    if (cut < 1) {
+      lastError = "`" + tunnel.name + "` has no endpoint, so the kill switch has nothing to allow through."
+      return
+    }
+    var host = endpoint.substring(0, cut)
+    var port = endpoint.substring(cut + 1)
+    if (String(tunnel.device || "") === "") {
+      lastError = "The tunnel device is not up yet."
+      return
+    }
+
+    actionStatus = "Turning the kill switch on — authorize to continue…"
+    lastError = ""
+    killswitchProcess.command = [
+      "pkexec", pluginDir + "/bin/killswitch",
+      "on", tunnel.device, host, port, String(tunnel.endpointProto || "udp")
+    ]
+    killswitchProcess.running = true
+  }
+
+  function disarmKillswitch() {
+    if (killswitchProcess.running) return
+    actionStatus = "Turning the kill switch off — authorize to continue…"
+    lastError = ""
+    killswitchProcess.command = ["pkexec", pluginDir + "/bin/killswitch", "off"]
+    killswitchProcess.running = true
+  }
+
+  function toggleKillswitch() {
+    if (killswitchArmed) disarmKillswitch()
+    else if (activeTunnel) armKillswitch(activeTunnel)
+    else lastError = "Connect a tunnel first — a kill switch with nothing to protect just blocks everything."
+  }
+
+  // Called once per poll, after devices have been resolved. It only ever
+  // arms: a tunnel that goes down on its own must leave the rules standing,
+  // and the only paths that disarm are the user asking and a deliberate
+  // disconnect.
+  function _maintainKillswitch() {
+    if (killswitchProcess.running || !killSwitchEnabled) return
+    var tunnel = activeTunnel
+    if (!tunnel || String(tunnel.device || "") === "") return
+    // Stale means the rules name a device that is no longer the tunnel's —
+    // a reconnect that came back as tun1 would otherwise be blocked by the
+    // switch that is supposed to be protecting it.
+    if (!killswitchArmed || Model.killswitchStale(killswitch, tunnel)) armKillswitch(tunnel)
+  }
+
   function deleteTunnel(tunnel) {
     if (!tunnel || removeProcess.running) return
     actionStatus = "Deleting " + tunnel.name + " — authorize to continue…"
@@ -869,6 +955,17 @@ Item {
       dependencyWatch: dependencyWatch,
       missingCommands: {},
       requirementWatch: requirementWatch,
+      // Presence and parameters, which are not secrets — the endpoint and
+      // port are already on the profile row. Tier 3 asserts on this.
+      killswitch: {
+        armed: killswitchArmed,
+        device: killswitch ? killswitch.device : "",
+        endpoint: killswitch ? killswitch.endpoint : "",
+        port: killswitch ? killswitch.port : "",
+        proto: killswitch ? killswitch.proto : "",
+        enabled: killSwitchEnabled,
+        text: killswitchText
+      },
       backends: []
     }
     for (var i = 0; i < sortedTunnels.length; i++) {
@@ -880,6 +977,7 @@ Item {
         protocol: tunnel.protocol,
         unit: tunnel.unit,
         endpoint: tunnel.endpoint,
+        endpointProto: tunnel.endpointProto,
         state: tunnel.state,
         device: tunnel.device,
         rxBytes: telem.rxBytes,
@@ -1008,7 +1106,14 @@ Item {
     onExited: function(exitCode) {
       if (exitCode === 0) {
         root.lastError = ""
+        // The stop the user asked for succeeded, so the rules come down with
+        // it. Only here: a tunnel that dropped by itself never reaches this.
+        if (root._disarmAfterStop) {
+          root._disarmAfterStop = false
+          root.disarmKillswitch()
+        }
       } else {
+        root._disarmAfterStop = false
         root._clearPending()
         // Exit 1 with nothing on stderr is what a dismissed polkit prompt
         // looks like from here, and "Command failed" would be a lie.
@@ -1149,6 +1254,35 @@ Item {
     }
   }
 
+  Process {
+    id: killswitchProcess
+    running: false
+    command: []
+    stderr: StdioCollector { id: killswitchErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.actionStatus = ""
+      if (exitCode !== 0) {
+        var text = Model.cleanError(String(killswitchErr.text || ""))
+        root.lastError = text !== "" ? text : "Authorization was declined."
+      }
+      // Read the marker back either way rather than assuming the command did
+      // what it said: a failed arm that left half a table would otherwise be
+      // invisible, and it is the state where being wrong costs the most.
+      killswitchFile.reload()
+    }
+  }
+
+  FileView {
+    id: killswitchFile
+    path: "/run/connor-vpn/killswitch"
+    watchChanges: false
+    printErrors: false
+    onLoaded: root.killswitch = Model.parseKillswitch(text())
+    // Absent is the normal case, not an error: the marker lives on a tmpfs
+    // and does not exist until something arms.
+    onLoadFailed: root.killswitch = Model.parseKillswitch("")
+  }
+
   FileView {
     id: uptimeFile
     path: "/proc/uptime"
@@ -1238,6 +1372,10 @@ Item {
           name: root._importName,
           protocol: root._importProtocol,
           endpoint: root._importPlan ? root._importPlan.endpoint : "",
+          // The transport the tunnel dials out on, for the kill switch's
+          // endpoint rule. Derived by the backend from the config; nothing
+          // outside backends/ knows what decides it.
+          endpointProto: root._importPlan ? root._importPlan.endpointProto : "udp",
           // Kept with the profile, not reported once and forgotten: the
           // profile stays broken until the package arrives.
           requires: root._importPlan ? root._importPlan.requiredCommands : [],

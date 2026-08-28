@@ -137,6 +137,24 @@ function endpoint(parsed) {
   return host === "" ? "" : host + ":" + port
 }
 
+// Which transport the tunnel dials out on, for the kill switch's endpoint
+// rule — the one thing that must stay permitted while everything else is
+// dropped. `proto` sets it globally; a third argument on `remote` overrides it
+// for that server. OpenVPN's own default is udp.
+//
+// The `-client`/`-server` suffixes are the same wire protocol: `udp4`, `udp6`
+// and `tcp-client` all reduce to the two the firewall understands.
+function endpointProto(parsed) {
+  var value = ""
+  var remotes = directives(parsed, "remote")
+  if (remotes.length > 0 && remotes[0].args.length > 2) value = remotes[0].args[2]
+  if (value === "") {
+    var protos = directives(parsed, "proto")
+    if (protos.length > 0) value = protos[0].args[0] || ""
+  }
+  return /^tcp/i.test(value) ? "tcp" : "udp"
+}
+
 function isClientConfig(parsed) {
   return directives(parsed, "client").length > 0 ||
          directives(parsed, "tls-client").length > 0 ||
@@ -267,6 +285,7 @@ function plan(text, options) {
     name: name,
     protocol: "openvpn",
     endpoint: endpoint(parsed),
+    endpointProto: endpointProto(parsed),
     content: out.join("\n").replace(/\n+$/, "") + "\n",
     assets: assets,
     hookTargets: hookTargets,

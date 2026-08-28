@@ -213,6 +213,9 @@ function plan(text, opts) {
     name: name,
     protocol: "wireguard",
     endpoint: endpoint(parsed),
+    // WireGuard is UDP and only UDP — there is no configuration that changes
+    // it, so the kill switch's endpoint rule never has to ask.
+    endpointProto: "udp",
     // Self-contained and left alone. Only the line endings are normalised, so
     // a config written on Windows does not arrive with carriage returns.
     content: parsed.text.replace(/\n+$/, "") + "\n",

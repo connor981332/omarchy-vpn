@@ -506,27 +506,185 @@ is no UI and no network. Everything below follows from that:
 
 - Own a dedicated `inet connor_vpn_killswitch` table and touch nothing else, so
   teardown is `nft delete table` and cannot damage another owner's rules.
-  This machine runs Docker, which owns rules of its own — a real collision risk.
-- Helper gains `killswitch on <endpoint> <port> <device>`, `off`, and `status`.
 - **The README documents the terminal recovery command**
-  (`pkexec .../install-profile killswitch off`). A kill switch that can only be
-  turned off from a GUI you cannot reach is a trap, and being ideologically
-  pure about "never open a terminal" here would be actively harmful.
+  (`pkexec .../bin/killswitch off`). A kill switch that can only be turned off
+  from a GUI you cannot reach is a trap, and being ideologically pure about
+  "never open a terminal" here would be actively harmful.
 - The panel shows an unmissable indicator whenever it is armed, including when
   no tunnel is up — that is exactly the state where it is confusing.
-- State lives in nftables, not in the widget, so a shell restart reads reality.
+- Nothing is ever written to `/etc/nftables.conf`, so **a reboot always
+  restores connectivity.** That is the last-resort recovery path and it costs
+  nothing to guarantee, because in-kernel rules do not survive a reboot unless
+  something deliberately restores them.
 
-### Verify before building
-- [ ] Can `nft` add and delete our own table via pkexec without disturbing
-      NetworkManager's or Docker's rules?
-- [ ] What happens across suspend/resume, and on a reconnect where the server
-      resolves to a different endpoint IP?
-- [ ] Does the tunnel's own handshake traffic survive the rules? (The switch
-      must permit traffic to the endpoint or it deadlocks the connection.)
+### Verified before building — all three, in a user namespace
+
+`unshare --user --map-root-user --net --mount` gives a private, writable
+nftables ruleset with no `sudo` at all, so the whole rule set was developed
+against dummy interfaces and real counters while the host's ruleset was never
+touched.
+
+- [x] **`nft` is on every Omarchy machine, and no new dependency is needed.**
+      `ufw` is in `omarchy-base.packages` (Omarchy even configures it —
+      `install/config/firewall.sh` sets `default deny incoming`), `ufw` depends
+      on `iptables`, and `iptables` depends on `nftables`. `docker`, also in
+      base, requires it too. This is the rare case where the dependency rule
+      resolves to "free".
+- [x] **Our table coexists with another owner's, and our drop still wins.**
+      Proven against a stand-in table with `policy accept` and an explicit
+      `accept` for the same packet: nftables treats `accept` as "continue to
+      the next base chain", so it is not a veto, while a `drop` anywhere is
+      final. Our verdict therefore does not depend on priority or on being
+      installed before ufw. Deleting our table left the other one intact.
+- [x] **The tunnel's own handshake survives.** The endpoint rule is matched
+      before anything else can drop it, and the counter confirmed the UDP
+      packets to the server were accepted while a ping to a public address
+      fell through to the policy.
+
+### The rules
+
+One table, two base chains that both `jump guard`, and `policy drop` on each —
+so anything the guard does not explicitly accept is blocked. Fail-closed is
+the only defensible default here: a rule we forgot should cost connectivity,
+never privacy.
+
+```
+oifname "lo" accept
+oifname "<tunnel device>" accept          # everything inside the tunnel
+ip  daddr @endpoints4 <proto> dport <port> accept    # the tunnel's own traffic
+ip6 daddr @endpoints6 <proto> dport <port> accept
+meta l4proto { tcp, udp } th dport { 53, 853 } drop  # DNS, before the LAN pass
+udp sport 68  dport 67  accept                        # keep the DHCP lease
+udp sport 546 dport 547 accept
+ip  daddr { RFC1918, link-local, multicast, broadcast } accept
+ip6 daddr { fe80::/10, ff00::/8, fc00::/7 } accept
+icmpv6 type { nd-* } accept                           # v6 needs ND to function
+counter comment "blocked"                             # falls through to policy
+```
+
+Four decisions inside that worth stating:
+
+- **The `inet` family, not `ip`.** An IPv6 leak is the classic way a kill
+  switch fails, and `inet` covers both families in one table rather than
+  relying on a second table nobody remembers to write.
+- **A `forward` chain as well as `output`.** Docker is in Omarchy's base
+  packages, so containers routing out through the host are a real leak path on
+  a stock machine. The same guard covers them: container-to-container traffic
+  has an RFC1918 destination and passes, container-to-internet does not.
+- **LAN is allowed, DNS to the LAN is not.** Printers, a NAS and local dev
+  keep working, which is what people expect and what the commercial clients
+  do. But the LAN pass would otherwise re-open DNS to the router — every query
+  visible to the ISP — so port 53 and 853 are dropped just above it. In-tunnel
+  DNS is unaffected, because `oifname` accepted it two rules earlier.
+- **The endpoint is pinned by address.** The helper resolves the hostname
+  itself and puts every answer in the set. A server that resolves to a
+  *different* address on a later reconnect would deadlock, so re-arming when
+  the endpoint changes is Service's job, not the rule set's.
+
+### Behaviour — what "on" means
+
+Taking the decision rather than asking, and taking it from what the commercial
+clients do, because that is what the words lead people to expect:
+
+- Armed while a tunnel is up.
+- **If the tunnel drops unexpectedly, the rules stay and traffic stays
+  blocked.** That is the entire point; a kill switch that opens on failure is
+  decoration.
+- Disconnecting deliberately disarms it. Distinguishing the two is Service's
+  job — it already knows whether a stop was asked for.
+- Not persistent across a reboot in this phase. "Always-on from boot" is the
+  variant that locks a user out with no UI running to fix it; it wants to be a
+  deliberate opt-in with a documented escape hatch, not a default.
+
+### `bin/killswitch`, not a verb on `install-profile`
+
+A deviation from the earlier sketch, made deliberately. `install-profile` is
+about profiles and its header promises everything it does is "deliberately
+dumb"; taking the machine offline is a different trust surface, and pkexec
+authorizes per invocation either way, so folding them together buys no
+privilege separation and costs the reader an accurate name. Two small
+auditable scripts beat one that does both.
+
+It takes `on <device> <endpoint> <port> <proto>`, `off`, and `status`, and it
+validates every one of them — the caller is unprivileged and therefore
+untrusted, exactly as with the other helper.
+
+### Reading the state without root
+
+`nft list` requires `CAP_NET_ADMIN`, so the widget cannot see its own rules —
+polling through `pkexec` would mean a prompt every tick, which is absurd. The
+helper therefore writes `/run/connor-vpn/killswitch`, mode 0644, as the
+unprivileged mirror: armed flag, device, endpoint, port, and the moment it was
+armed. `/run` is a tmpfs, so the marker and the rules die together at a reboot
+and cannot disagree across one.
+
+The rules stay the source of truth. `status` reads the table itself and is
+what the tests and the recovery path use; the marker is what the panel reads.
 
 **Done when:** with the switch armed and the tunnel forcibly killed, no packet
-reaches the internet; disarming restores connectivity fully; and a Tier 2 test
-asserts both, in a namespace, without touching the host's rules.
+reaches the internet; disarming restores connectivity fully; and a test asserts
+both, in a namespace, without touching the host's rules.
+
+### Status: built 2026-08-27
+
+Everything above shipped. Two things came out differently from the sketch and
+both are improvements.
+
+**The kill-switch suite needs no root, so it is not a Tier 2.**
+`unshare --user --map-root-user --net` has its own complete nftables ruleset,
+so the real rules are applied to real interfaces and real packets are counted
+in `test/killswitch.test.sh`, which runs in the default `./run-tests.sh`. The
+host's ruleset is never touched. Fourteen assertions inside the namespace,
+sixteen outside it.
+
+Every one of them is about a **packet, not about the text of a rule** — a rule
+set that reads correctly and drops the tunnel's own handshake is precisely the
+failure worth catching, and only a counter can tell you. That includes the
+full-tunnel case: the default route is moved into the tunnel and the endpoint
+rule is re-checked, because that is the shape where a mistake deadlocks the
+connection the switch is protecting.
+
+**The full-tunnel item is answered for routing and unanswerable for
+NetworkManager.** The routing half is now covered, in the namespace, above.
+The NetworkManager half cannot be: NM is not running in a namespace, and the
+only way to observe it against a full-tunnel profile is to move the host's
+real default route — which is the thing that must not be automated. Recorded
+as a human check rather than pretended away.
+
+**Two test bugs found by breaking the code on purpose**, both of the shape
+that passes while testing nothing. Without an IPv6 address and route in the
+namespace the kernel refuses the v6 ping *before a packet exists*, so the leak
+assertion passed having exercised nothing; and the inner namespace shell's TAP
+had to be captured and tallied by the outer one, with the assertion count
+itself asserted, because a namespace that exits early otherwise looks exactly
+like one where everything passed. Same family as the `ran:` marker lesson from
+the node shim.
+
+Seven mechanical checks were each verified to fail when the code was
+deliberately broken: both chains fail-closed, the `inet` family, the DNS drop
+sitting above the LAN accept, the poll never disarming, and the rest.
+
+**Still human:** the polkit prompt from the toggle, and one real-world
+connection with a full-tunnel commercial profile — which is also the last look
+at whether NetworkManager touches a tunnel that owns the default route.
+
+### Also in this phase: the full-tunnel shape
+
+Phase 2 established that NetworkManager does not interfere with our tunnel
+device, but it established it against a harness profile that routes a single
+/24 and never moves the default route. A real profile pushes
+`redirect-gateway`, which is a materially different state and the one the kill
+switch actually operates in.
+
+That case cannot be tested the way the others are. Today's Tier 2 starts the
+*client* on the real machine through the real unit; a server pushing
+`redirect-gateway` would move the host's default route into a tunnel that ends
+in a namespace with no route onward, taking the machine offline for the length
+of the run and leaving it there if teardown failed. So the full-tunnel case
+puts **both** ends in namespaces, where a hijacked default route is contained.
+It gives up the real-unit path for that one scenario, which is acceptable:
+the control plane is already proven by the tests that exist, and what is under
+test here is routing and rules.
 
 ---
 
@@ -540,8 +698,9 @@ fifth:
   command array or an error string).
 - **Tier 2** — a wg tunnel beside the OpenVPN one; ~~a profile with a bogus
   `up` path, asserting the panel reports the missing file and not systemd's
-  boilerplate~~ **written, not yet run**; the kill-switch assertions, run inside the namespace so the
-  host's rules are never touched.
+  boilerplate~~ **done**; ~~the kill-switch assertions, run inside the
+  namespace so the host's rules are never touched~~ **done, and they turned
+  out to need no root at all, so they run in the default suite.**
 - **Tier 3** — `state` JSON grows kill-switch status and credential presence
   (presence only, never the secret).
 - **Tier 4** — the post-install recheck; and the dependency matrix gains
@@ -561,8 +720,13 @@ relevant log on failure.
 - [x] `wg show` unprivileged? — **no**, so last-handshake age is dropped (Phase 2)
 - [x] `/etc/openvpn/client` exists right after a fresh install — **yes**, via
       the package's tmpfiles and pacman's post-transaction hook (Phase 1)
-- [ ] nftables coexistence with Docker and NetworkManager
-- [ ] endpoint-permitting rules do not deadlock the tunnel handshake
+- [x] nftables coexistence with another owner — **yes** (Phase 4): `accept` in
+      another table is not a veto, `drop` in ours is final, and deleting our
+      table leaves theirs intact
+- [x] endpoint-permitting rules do not deadlock the tunnel handshake — **they
+      do not** (Phase 4), confirmed on the rule's own counter
+- [x] `nft` needs no new dependency — **free** via `ufw` -> `iptables` ->
+      `nftables`, all three reachable from `omarchy-base.packages` (Phase 4)
 
 ## Not covered by this plan
 

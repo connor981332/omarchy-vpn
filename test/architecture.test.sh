@@ -252,6 +252,87 @@ else
     "Config.js says '${cfg_ext:-<none>}', install-profile says '${helper_ext:-<none>}'"
 fi
 
+echo "# the kill switch stays fail-closed and never disarms itself"
+# The single behaviour that makes it a kill switch rather than a decoration:
+# a tunnel that drops on its own leaves the rules standing. Only two paths may
+# take them down — the user asking, and a stop the user asked for.
+disarm_callers="$(grep -n 'disarmKillswitch()' Service.qml | grep -v 'function disarmKillswitch')"
+bad_disarm=""
+while IFS= read -r line; do
+  [[ -z $line ]] && continue
+  lineno="${line%%:*}"
+  fn="$(head -n "$lineno" Service.qml | grep -oE '^  function [A-Za-z_]+' | tail -1 | awk '{print $2}')"
+  case "$fn" in
+    toggleKillswitch) ;;
+    *) bad_disarm+="  line $lineno is inside ${fn:-<an inline handler>}"$'\n' ;;
+  esac
+done <<< "$disarm_callers"
+
+# The one inline handler allowed is actionProcess.onExited, and only behind
+# the _disarmAfterStop flag that disconnectTunnel sets.
+if grep -q 'if (root._disarmAfterStop)' Service.qml; then
+  check "an unexpected drop leaves the rules standing" 0
+else
+  check "an unexpected drop leaves the rules standing" 1 \
+    "nothing distinguishes a deliberate stop from a tunnel that fell over"
+fi
+
+if grep -q '_disarmAfterStop = killswitchArmed' Service.qml; then
+  check "only a stop the user asked for disarms" 0
+else
+  check "only a stop the user asked for disarms" 1 "$bad_disarm"
+fi
+
+# _maintainKillswitch runs every poll. If it ever learns to disarm, a dropped
+# tunnel would silently re-open the machine.
+maintain_body="$(awk '/^  function _maintainKillswitch\(\)/,/^  }$/' Service.qml)"
+if [[ -z $maintain_body ]]; then
+  check "the poll's maintenance only ever arms" 1 "_maintainKillswitch() not found"
+elif grep -q 'disarm' <<< "$maintain_body"; then
+  check "the poll's maintenance only ever arms" 1 "$maintain_body"
+else
+  check "the poll's maintenance only ever arms" 0
+fi
+
+# Both base chains must be policy drop. An accept policy would mean the rules
+# read as a kill switch and block nothing at all.
+if [[ "$(grep -c 'policy drop;' bin/killswitch)" -eq 2 ]]; then
+  check "both base chains are fail-closed" 0
+else
+  check "both base chains are fail-closed" 1 \
+    "$(grep -n 'type filter hook\|policy' bin/killswitch)"
+fi
+
+# inet, not ip: an IPv6 leak is the classic way a kill switch fails, and it
+# fails invisibly.
+if grep -q 'FAMILY="inet"' bin/killswitch; then
+  check "the table covers IPv6 as well as IPv4" 0
+else
+  check "the table covers IPv6 as well as IPv4" 1
+fi
+
+# The DNS drop must come BEFORE the LAN accept. Reversed, every query still
+# goes to the router in plaintext and the rule set looks correct while doing
+# it. Order is the whole content of this rule.
+dns_line="$(grep -n 'comment "dns"' bin/killswitch | cut -d: -f1)"
+lan_line="$(grep -n 'comment "lan"' bin/killswitch | cut -d: -f1)"
+if [[ -n $dns_line && -n $lan_line && $dns_line -lt $lan_line ]]; then
+  check "DNS is dropped before the local network is allowed" 0
+else
+  check "DNS is dropped before the local network is allowed" 1 \
+    "dns at line ${dns_line:-<none>}, lan at line ${lan_line:-<none>}"
+fi
+
+# Nothing may write the firewall's persistent config. A reboot restoring the
+# rules would take away the last recovery path there is.
+if grep -rn 'nftables.conf' --include='*.qml' --include='*.js' bin/ . 2>/dev/null \
+     | grep -v 'README\|PLAN\|CLAUDE\|test/' | grep -q .; then
+  check "nothing writes /etc/nftables.conf, so a reboot always recovers" 1 \
+    "$(grep -rn 'nftables.conf' bin/ --include='*.qml' --include='*.js' . 2>/dev/null | grep -v 'README\|PLAN\|CLAUDE\|test/')"
+else
+  check "nothing writes /etc/nftables.conf, so a reboot always recovers" 0
+fi
+
 echo "# no symlinks — plugin validation rejects them"
 links="$(find . -type l -not -path './.git/*' 2>/dev/null || true)"
 if [[ -z $links ]]; then

@@ -19,7 +19,8 @@ import Quickshell.Io
 Item {
   id: root
 
-  // { name, protocol, endpoint, importedAt, requires, needsCredentials,
+  // { name, protocol, endpoint, endpointProto, importedAt, requires,
+  //   needsCredentials,
   //   hasCredentials }
   //
   // `requires` is a list of COMMAND NAMES the profile needs at connect time
@@ -78,6 +79,7 @@ Item {
       name: String(entry.name),
       protocol: String(entry.protocol),
       endpoint: String(entry.endpoint || ""),
+      endpointProto: String(entry.endpointProto || "udp"),
       importedAt: entry.importedAt || Math.floor(Date.now() / 1000),
       requires: _cleanRequires(entry.requires),
       needsCredentials: entry.needsCredentials === true,
@@ -108,6 +110,7 @@ Item {
         name: entry.name,
         protocol: entry.protocol,
         endpoint: entry.endpoint,
+        endpointProto: entry.endpointProto,
         importedAt: entry.importedAt,
         requires: entry.requires,
         needsCredentials: entry.needsCredentials,
@@ -144,6 +147,7 @@ Item {
         name: names[j],
         protocol: protocol,
         endpoint: known ? known.endpoint : "",
+        endpointProto: known ? known.endpointProto : "udp",
         importedAt: known ? known.importedAt : Math.floor(Date.now() / 1000),
         // A privileged listing returns names and nothing else, so a profile
         // this widget did not import has no known requirements. Absence here
@@ -194,6 +198,7 @@ Item {
         name: String(entry.name),
         protocol: String(entry.protocol),
         endpoint: String(entry.endpoint || ""),
+      endpointProto: String(entry.endpointProto || "udp"),
         importedAt: entry.importedAt || 0,
         requires: _cleanRequires(entry.requires),
         needsCredentials: entry.needsCredentials === true,

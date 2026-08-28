@@ -555,4 +555,72 @@ t.test("the job-failed boilerplate keeps its sentence", () => {
   t.ok(cleaned.indexOf("…") === -1, "and is no longer truncated")
 })
 
+t.suite("kill switch")
+
+t.test("reads the marker the helper writes", () => {
+  const ks = M.parseKillswitch([
+    "armed=1", "device=tun0", "endpoint=vpn.example.com", "port=1194",
+    "proto=udp", "since=1700000000"
+  ].join("\n"))
+  t.ok(ks.armed, "armed")
+  t.eq(ks.device, "tun0")
+  t.eq(ks.endpoint, "vpn.example.com")
+  t.eq(ks.port, "1194")
+  t.eq(ks.proto, "udp")
+  t.eq(ks.since, 1700000000)
+})
+
+t.test("absent, empty and unreadable all mean disarmed", () => {
+  // The marker lives on a tmpfs and does not exist until something arms. That
+  // is the normal state, not an error, and it is also what a reboot leaves --
+  // which is correct, because the rules are gone by then too.
+  t.ok(!M.parseKillswitch("").armed, "empty")
+  t.ok(!M.parseKillswitch(null).armed, "null")
+  t.ok(!M.parseKillswitch("armed=0").armed, "explicitly off")
+  t.ok(!M.parseKillswitch("garbage\nnot a marker").armed, "not a marker at all")
+})
+
+t.test("an endpoint containing an '=' survives", () => {
+  // Not hypothetical for a key=value format: a hostname cannot contain one,
+  // but splitting on the LAST '=' instead of the first would corrupt one that
+  // did, and the failure would be a deadlocked tunnel.
+  t.eq(M.parseKillswitch("endpoint=a=b").endpoint, "a=b")
+})
+
+t.test("says out loud when it is armed with nothing connected", () => {
+  // The state worth shouting about: no internet, and the cause is a setting
+  // turned on in some earlier session.
+  const armed = M.parseKillswitch("armed=1\ndevice=tun0")
+  t.ok(M.killswitchText(armed, false).indexOf("no tunnel") !== -1,
+       "names the situation")
+  t.ok(M.killswitchText(armed, true).indexOf("no tunnel") === -1,
+       "and does not when a tunnel is up")
+  t.eq(M.killswitchText(M.parseKillswitch(""), false), "",
+       "silent when disarmed")
+})
+
+t.test("rules naming a device that is no longer the tunnel's are stale", () => {
+  // A reconnect that comes back as tun1 would be blocked by the very switch
+  // that is supposed to be protecting it.
+  const armed = M.parseKillswitch("armed=1\ndevice=tun0")
+  t.ok(M.killswitchStale(armed, M.makeTunnel({ name: "a", device: "tun1" })),
+       "device changed")
+  t.ok(!M.killswitchStale(armed, M.makeTunnel({ name: "a", device: "tun0" })),
+       "device unchanged")
+  t.ok(!M.killswitchStale(armed, M.makeTunnel({ name: "a", device: "" })),
+       "a tunnel with no device yet is not evidence of staleness")
+  t.ok(!M.killswitchStale(M.parseKillswitch(""), M.makeTunnel({ name: "a", device: "tun1" })),
+       "disarmed is never stale")
+})
+
+t.test("a tunnel carries the transport its endpoint is dialled on", () => {
+  t.eq(M.makeTunnel({ name: "a", endpointProto: "tcp" }).endpointProto, "tcp")
+  t.eq(M.makeTunnel({ name: "a" }).endpointProto, "udp", "udp is the default")
+  // The poll rebuilds every tunnel each tick; a field that vanished seconds
+  // after import would deadlock the kill switch on the next re-arm.
+  const carried = M.updateTunnel(
+    M.makeTunnel({ name: "a", endpointProto: "tcp" }), { state: "up" })
+  t.eq(carried.endpointProto, "tcp")
+})
+
 t.done()

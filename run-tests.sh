@@ -52,6 +52,7 @@ run "Tier 1  OpenVPN config"          "$NODE" test/config.test.js
 run "Tier 1  WireGuard config"        "$NODE" test/wireguard-config.test.js
 run "Tier 1  systemd escaping"        ./test/harness/escape.test.sh
 run "         privileged helper"      ./test/helper.test.sh
+run "         kill switch"            ./test/killswitch.test.sh
 run "         architecture"           ./test/architecture.test.sh
 run "Tier 4  dependency matrix"       ./test/dependency.test.sh
 run "         plugin validation"      omarchy plugin validate "$ROOT"
