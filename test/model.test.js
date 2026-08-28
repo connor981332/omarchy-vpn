@@ -162,6 +162,16 @@ t.test("groups and finds", () => {
   t.eq(M.activeTunnels(list).map((x) => x.name), ["a"])
 })
 
+t.test("a tunnel carries what its profile needs beyond the backend", () => {
+  // The requirement outlives the import, so it rides on the tunnel and the
+  // panel can keep reporting it for as long as the profile is installed.
+  const req = [{ command: "resolvconf", packageName: "openresolv", label: "openresolv" }]
+  t.eq(M.makeTunnel({ name: "a", protocol: "p", requires: req }).requires.length, 1)
+  t.eq(M.makeTunnel({ name: "a", protocol: "p" }).requires.length, 0, "defaults to none")
+  t.eq(M.makeTunnel({ name: "a", protocol: "p", requires: "nonsense" }).requires.length, 0,
+       "a hand-edited index cannot inject a non-array")
+})
+
 t.suite("state")
 
 t.test("maps systemctl is-active vocabulary", () => {

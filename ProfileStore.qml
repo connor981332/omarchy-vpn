@@ -19,7 +19,13 @@ import Quickshell.Io
 Item {
   id: root
 
-  // { name, protocol, endpoint, importedAt }
+  // { name, protocol, endpoint, importedAt, requires }
+  //
+  // `requires` is what the profile needs at connect time beyond its backend —
+  // a command supplied by some other package. It is recorded HERE rather than
+  // reported once at import because it is a property of the installed profile,
+  // not of the moment it was installed: the profile stays broken until the
+  // package arrives, across restarts, and the panel has to keep saying so.
   property var profiles: []
   property bool loaded: false
 
@@ -62,7 +68,8 @@ Item {
       name: String(entry.name),
       protocol: String(entry.protocol),
       endpoint: String(entry.endpoint || ""),
-      importedAt: entry.importedAt || Math.floor(Date.now() / 1000)
+      importedAt: entry.importedAt || Math.floor(Date.now() / 1000),
+      requires: _cleanRequires(entry.requires)
     })
     profiles = next
     save()
@@ -93,11 +100,33 @@ Item {
         name: names[j],
         protocol: protocol,
         endpoint: known ? known.endpoint : "",
-        importedAt: known ? known.importedAt : Math.floor(Date.now() / 1000)
+        importedAt: known ? known.importedAt : Math.floor(Date.now() / 1000),
+        // A privileged listing returns names and nothing else, so a profile
+        // this widget did not import has no known requirements. Absence here
+        // means "not known to need anything", never "known to need nothing".
+        requires: known ? known.requires : []
       })
     }
     profiles = next
     save()
+  }
+
+  // The index is a file on disk that a person can edit, so nothing read back
+  // out of it is trusted to have the right shape.
+  function _cleanRequires(list) {
+    var out = []
+    if (!(list instanceof Array)) return out
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i] || {}
+      if (!item.command || !item.packageName) continue
+      out.push({
+        command: String(item.command),
+        packageName: String(item.packageName),
+        label: String(item.label || item.packageName),
+        warning: String(item.warning || "")
+      })
+    }
+    return out
   }
 
   function load(text) {
@@ -117,7 +146,8 @@ Item {
         name: String(entry.name),
         protocol: String(entry.protocol),
         endpoint: String(entry.endpoint || ""),
-        importedAt: entry.importedAt || 0
+        importedAt: entry.importedAt || 0,
+        requires: _cleanRequires(entry.requires)
       })
     }
 

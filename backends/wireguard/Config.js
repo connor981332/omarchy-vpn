@@ -177,9 +177,13 @@ function plan(text, opts) {
   if (iface && valueOf(iface, "DNS") !== "") {
     commandChecks.push({
       command: "resolvconf",
-      warning: "This profile sets DNS, which wg-quick applies with `resolvconf` — "
-        + "and that command is not installed. Install the openresolv package, or "
-        + "remove the DNS line, or the tunnel will fail to start."
+      // Named here, with the protocol, because which package supplies a
+      // command is backend knowledge — Service.qml may not know it.
+      packageName: "openresolv",
+      label: "openresolv",
+      warning: "This profile sets DNS, which wg-quick applies with `resolvconf`, "
+        + "and that command is not installed. Without it the tunnel will fail to "
+        + "start. Install openresolv, or remove the DNS line from the profile."
     })
   }
 

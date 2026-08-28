@@ -471,10 +471,29 @@ Panel {
 
               Repeater {
                 model: section.sectionTunnels
-                TunnelRow {
+                Column {
+                  id: tunnelItem
                   required property var modelData
                   width: section.width
-                  tunnel: modelData
+                  spacing: Style.space(6)
+
+                  TunnelRow {
+                    width: tunnelItem.width
+                    tunnel: tunnelItem.modelData
+                  }
+
+                  // Anything the profile needs beyond its backend, shown under
+                  // the row it belongs to and for as long as it is missing —
+                  // not once at import, when the profile is about to be
+                  // installed and stay broken.
+                  Repeater {
+                    model: tunnelItem.modelData.requires || []
+                    RequirementNote {
+                      required property var modelData
+                      width: tunnelItem.width
+                      requirement: modelData
+                    }
+                  }
                 }
               }
             }
@@ -588,6 +607,51 @@ Panel {
       Button {
         text: "Re-check"
         onClicked: vpn.recheckDependency(card.backend.protocol)
+      }
+    }
+  }
+
+  // The per-profile twin of DependencyCard. Same hand-off, same self-clearing
+  // watch, but keyed on a command rather than a backend — so it can never make
+  // a working backend look uninstalled.
+  component RequirementNote: Column {
+    id: note
+    property var requirement: null
+
+    readonly property bool missing: note.requirement
+      && vpn.isCommandMissing(note.requirement.command)
+    readonly property bool waiting: note.requirement
+      && vpn.requirementWatch === note.requirement.command
+
+    visible: note.missing
+    spacing: Style.space(6)
+
+    Text {
+      width: note.width
+      text: note.requirement ? "⚠ " + note.requirement.warning : ""
+      color: root.urgent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+
+    Row {
+      spacing: Style.space(8)
+
+      Button {
+        text: note.waiting
+          ? "Waiting…"
+          : "Install " + (note.requirement ? note.requirement.label : "")
+        enabled: !note.waiting
+        opacity: enabled ? 1.0 : 0.5
+        onClicked: vpn.installRequirement(note.requirement.command,
+                                          note.requirement.packageName,
+                                          note.requirement.label)
+      }
+
+      Button {
+        text: "Re-check"
+        onClicked: vpn.recheckRequirement(note.requirement.command)
       }
     }
   }

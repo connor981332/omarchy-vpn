@@ -232,6 +232,67 @@ else
   check "the poll does not probe" 0
 fi
 
+echo "# a profile's own requirement is separate from its backend's"
+# A package that one profile happens to need must never make its whole backend
+# look uninstalled — that would put up the "not installed" card and stop the
+# user importing or starting anything of that protocol.
+if grep -q 'property var missingCommands' Service.qml \
+   && ! grep -n 'missingDeps\[' Service.qml | grep -q 'command'; then
+  check "a profile requirement is tracked apart from the backend probe" 0
+else
+  check "a profile requirement is tracked apart from the backend probe" 1 \
+    "$(grep -n 'missingCommands\|missingDeps\[' Service.qml)"
+fi
+
+# Same laziness rule as the backend probe: this must not run on load, and must
+# not run from the poll either.
+req_sites="$(grep -n 'checkRequirements(' Service.qml | grep -v 'function checkRequirements')"
+req_expected="onDetailedChanged|<top level>"
+req_bad=""
+while IFS= read -r line; do
+  [[ -z $line ]] && continue
+  lineno="${line%%:*}"
+  fn="$(head -n "$lineno" Service.qml | grep -oE '^  (function [A-Za-z_]+|onDetailedChanged)' | tail -1 | awk '{print $NF}')"
+  [[ $fn =~ ^(onDetailedChanged)$ ]] || req_bad+="  line $lineno is inside ${fn:-<top level>}"$'\n'
+done <<< "$req_sites"
+
+if [[ -z $req_bad ]]; then
+  check "requirements are probed only when the panel is opened" 0
+else
+  check "requirements are probed only when the panel is opened" 1 "$req_bad"
+fi
+
+if grep -nE 'function refresh\(\)' -A 12 Service.qml | grep -q 'checkRequirements'; then
+  check "the poll does not probe requirements" 1
+else
+  check "the poll does not probe requirements" 0
+fi
+
+# The install hand-off is the same one, never a package manager.
+if grep -n 'function installRequirement' -A 10 Service.qml | grep -q 'omarchy-install-app'; then
+  check "a requirement install is handed off like any other" 0
+else
+  check "a requirement install is handed off like any other" 1 \
+    "$(grep -n 'function installRequirement' -A 10 Service.qml)"
+fi
+
+# The watch key must not be set by the hand-off. The timer runs whenever the
+# key is non-empty, and the budget is only set when the watch starts — so
+# setting the key early expires the watch on its first tick.
+if grep -n 'function installRequirement' -A 10 Service.qml | grep -q '_reqWatchCommand ='; then
+  check "the hand-off does not arm the watch key before its budget" 1 \
+    "$(grep -n 'function installRequirement' -A 10 Service.qml)"
+else
+  check "the hand-off does not arm the watch key before its budget" 0
+fi
+
+# And it gives up out loud, for the same reason the backend watch does.
+if grep -n 'function _requirementWatchExpired' -A 6 Service.qml | grep -q 'lastError'; then
+  check "a requirement install that never lands explains itself" 0
+else
+  check "a requirement install that never lands explains itself" 1
+fi
+
 echo "# the panel scopes the warning to one protocol"
 # The dependency card is rendered inside the per-backend Repeater and keyed on
 # that backend's own protocol, so it cannot appear for a protocol the user does

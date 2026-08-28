@@ -143,6 +143,9 @@ function makeTunnel(fields) {
     state: String(f.state || "down"),
     device: String(f.device || ""),
     path: String(f.path || ""),
+    // Packages this profile needs beyond its backend. Carried on the tunnel so
+    // the panel can keep saying so for as long as the profile is installed.
+    requires: f.requires instanceof Array ? f.requires : [],
     telemetry: f.telemetry || emptyTelemetry()
   }
 }

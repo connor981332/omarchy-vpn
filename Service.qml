@@ -67,6 +67,24 @@ Item {
   // every command. The journal is read asynchronously after a failure, so the
   // answer can arrive once the user has already tried something else — the
   // counter is what stops a stale reason from landing on a fresh attempt.
+  // Commands required by installed profiles: name -> true when absent.
+  // Deliberately NOT folded into missingDeps, which is keyed by protocol: a
+  // package one profile happens to need does not make its whole backend
+  // uninstalled, and must never put up the backend's "not installed" card.
+  property var missingCommands: ({})
+  property var _commandQueue: []
+  property string _commandChecking: ""
+
+  // The same detached-terminal problem as the backend install, so the same
+  // shape of answer: a bounded watch that clears the note by itself.
+  property string _reqWatchCommand: ""
+  property int _reqWatchTicks: 0
+  // Held separately from the watch key: the watch has no budget until the
+  // hand-off returns, and setting its key early starts the timer against a
+  // budget of zero, which expires it on the first tick.
+  property string _reqInstallCommand: ""
+  readonly property string requirementWatch: _reqWatchCommand
+
   property string _actionUnit: ""
   property int _actionSeq: 0
   property int _journalSeq: -1
@@ -183,6 +201,7 @@ Item {
         protocol: entry.protocol,
         unit: unit,
         endpoint: entry.endpoint,
+        requires: entry.requires,
         state: existing ? existing.state : "down",
         device: existing ? existing.device : ""
       }))
@@ -458,6 +477,106 @@ Item {
     installProcess.running = true
   }
 
+  // ------------------------------------------------- profile requirements
+
+  function isCommandMissing(command) {
+    return missingCommands[command] === true
+  }
+
+  // Every distinct command the installed profiles say they need.
+  function _requiredCommands() {
+    var seen = {}
+    var out = []
+    for (var i = 0; i < tunnels.length; i++) {
+      var reqs = tunnels[i].requires || []
+      for (var j = 0; j < reqs.length; j++) {
+        var name = reqs[j].command
+        if (!name || seen[name]) continue
+        seen[name] = true
+        out.push(name)
+      }
+    }
+    return out
+  }
+
+  // Called when the panel opens and after an import — never on load, and never
+  // from the poll. A profile's requirement is only interesting to someone
+  // actually looking at their profiles.
+  function checkRequirements(force) {
+    var wanted = _requiredCommands()
+    var queue = []
+    for (var i = 0; i < wanted.length; i++) {
+      if (!force && missingCommands[wanted[i]] !== undefined) continue
+      queue.push(wanted[i])
+    }
+    if (queue.length === 0) return
+    _commandQueue = queue
+    _checkNextCommand()
+  }
+
+  function recheckRequirement(command) {
+    if (!command) return
+    _commandQueue = [command]
+    _checkNextCommand()
+  }
+
+  function _checkNextCommand() {
+    if (commandProcess.running || _commandQueue.length === 0) return
+    var next = _commandQueue.slice()
+    _commandChecking = next.shift()
+    _commandQueue = next
+    commandProcess.command = ["omarchy-cmd-missing", _commandChecking]
+    commandProcess.running = true
+  }
+
+  // Hands off exactly like the backend install does — never a package manager
+  // from here.
+  function installRequirement(command, packageName, label) {
+    if (!command || !packageName) return
+    if (reqInstallProcess.running) return
+    actionStatus = "Installing " + (label || packageName) + "…"
+    lastError = ""
+    _reqInstallCommand = command
+    reqInstallProcess.command = ["omarchy-install-app", label || packageName, packageName]
+    reqInstallProcess.running = true
+  }
+
+  function _startRequirementWatch(command) {
+    if (!command) return
+    _reqWatchCommand = command
+    _reqWatchTicks = 100          // 100 x 3s — five minutes, then give up
+    reqWatchTimer.restart()
+    recheckRequirement(command)
+  }
+
+  function _stopRequirementWatch() {
+    _reqWatchCommand = ""
+    _reqWatchTicks = 0
+    reqWatchTimer.stop()
+  }
+
+  function _reqWatchTick() {
+    var command = _reqWatchCommand
+    if (command === "") {
+      _stopRequirementWatch()
+      return
+    }
+    if (_reqWatchTicks <= 0) {
+      _requirementWatchExpired(command)
+      return
+    }
+    _reqWatchTicks -= 1
+    recheckRequirement(command)
+  }
+
+  // Same reasoning as the backend watch: reverting the button with no message
+  // makes a declined install, a failed one and a slow mirror identical.
+  function _requirementWatchExpired(command) {
+    _stopRequirementWatch()
+    lastError = "`" + command + "` still isn't installed. Finish the install in the"
+      + " terminal and press Re-check, or install the package by hand."
+  }
+
   // The manual escape hatch behind the Re-check button. Forces a fresh probe.
   // It deliberately does NOT cancel a running watch — an impatient press
   // should not disable the thing that would have cleared the card anyway.
@@ -669,6 +788,8 @@ Item {
       profiles: [],
       missingDeps: {},
       dependencyWatch: dependencyWatch,
+      missingCommands: {},
+      requirementWatch: requirementWatch,
       backends: []
     }
     for (var i = 0; i < sortedTunnels.length; i++) {
@@ -686,10 +807,12 @@ Item {
         txBytes: telem.txBytes,
         defaultRoute: telem.defaultRoute,
         dns: telem.dns,
-        addresses: telem.addresses
+        addresses: telem.addresses,
+        requires: tunnel.requires
       })
     }
     for (var key in missingDeps) out.missingDeps[key] = missingDeps[key]
+    for (var cmd in missingCommands) out.missingCommands[cmd] = missingCommands[cmd]
     for (var b = 0; b < backends.length; b++) {
       out.backends.push({ protocol: backends[b].protocol, label: backends[b].label })
     }
@@ -768,6 +891,8 @@ Item {
     if (detailed) {
       telemetry.sample()
       telemetry.sampleDetailed()
+      // Point of use: someone is looking at their profiles. Never on load.
+      checkRequirements(false)
     }
   }
 
@@ -842,6 +967,45 @@ Item {
       var reason = Model.journalError(String(journalOut.text || ""))
       if (reason !== "") root.lastError = reason
     }
+  }
+
+  Process {
+    id: commandProcess
+    running: false
+    command: []
+    onExited: function(exitCode) {
+      // omarchy-cmd-missing exits 0 when the command is absent.
+      var missing = exitCode === 0
+      var next = {}
+      for (var key in root.missingCommands) next[key] = root.missingCommands[key]
+      next[root._commandChecking] = missing
+      root.missingCommands = next
+
+      if (!missing && root._reqWatchCommand === root._commandChecking) {
+        root._stopRequirementWatch()
+      }
+      root._commandChecking = ""
+      root._checkNextCommand()
+    }
+  }
+
+  Process {
+    id: reqInstallProcess
+    running: false
+    command: []
+    onExited: {
+      root.actionStatus = ""
+      // Detached terminal: this fires on launch, not on completion.
+      root._startRequirementWatch(root._reqInstallCommand)
+    }
+  }
+
+  Timer {
+    id: reqWatchTimer
+    interval: 3000
+    repeat: true
+    running: root._reqWatchCommand !== ""
+    onTriggered: root._reqWatchTick()
   }
 
   Process {
@@ -960,7 +1124,10 @@ Item {
         store.add({
           name: root._importName,
           protocol: root._importProtocol,
-          endpoint: root._importPlan ? root._importPlan.endpoint : ""
+          endpoint: root._importPlan ? root._importPlan.endpoint : "",
+          // Kept with the profile, not reported once and forgotten: the
+          // profile stays broken until the package arrives.
+          requires: root._importPlan ? root._importPlan.commandChecks : []
         })
       } else {
         var text = Model.cleanError(String(installErr.text || ""))
