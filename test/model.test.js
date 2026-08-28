@@ -350,4 +350,98 @@ t.test("cleans systemctl noise off an error", () => {
   t.ok(M.cleanError("x".repeat(300)).length <= 140)
 })
 
+
+t.suite("journal errors")
+
+// Verbatim from `journalctl -u openvpn-client@framework-omarchy.service -o cat`
+// on 2026-08-27, after the package providing the profile's --up hook was
+// removed. This is the exact text the widget would have been handed.
+const FAILED_START = [
+  "Stopped OpenVPN tunnel for framework-omarchy.",
+  "Starting OpenVPN tunnel for framework-omarchy...",
+  "Options error: --up script fails with '/usr/bin/update-systemd-resolved': No such file or directory (errno=2)",
+  "Options error: Please correct this error.",
+  "Use --help for more information.",
+  "openvpn-client@framework-omarchy.service: Main process exited, code=exited, status=1/FAILURE",
+  "openvpn-client@framework-omarchy.service: Failed with result 'exit-code'.",
+  "Failed to start OpenVPN tunnel for framework-omarchy."
+].join("\n")
+
+t.test("names the missing file, not systemd's boilerplate", () => {
+  t.eq(
+    M.journalError(FAILED_START),
+    "Options error: --up script fails with '/usr/bin/update-systemd-resolved': No such file or directory (errno=2)"
+  )
+})
+
+t.test("only reads the attempt that just failed", () => {
+  // The journal keeps every previous run. Reporting an hour-old error against
+  // a fresh attempt is worse than reporting nothing.
+  const stale = [
+    "Starting OpenVPN tunnel for x...",
+    "Options error: --up script fails with '/gone': No such file or directory (errno=2)",
+    "Failed to start OpenVPN tunnel for x.",
+    "Starting OpenVPN tunnel for x...",
+    "AUTH: Received control message: AUTH_FAILED",
+    "Failed to start OpenVPN tunnel for x."
+  ].join("\n")
+  t.eq(M.journalError(stale), "AUTH: Received control message: AUTH_FAILED")
+})
+
+t.test("a server-pushed unknown option is not a failure", () => {
+  // Observed on a working tunnel: the daemon prints this and connects anyway,
+  // so it must never be offered as the cause of a failed start.
+  const pushed = [
+    "Starting OpenVPN tunnel for x...",
+    "Options error: Unrecognized option or missing or extra parameter(s) in [PUSH-OPTIONS]:2: block-outside-dns (2.7.6)",
+    "RESOLVE: Cannot resolve host address: vpn.example.com:1194 (Name or service not known)",
+    "Failed to start OpenVPN tunnel for x."
+  ].join("\n")
+  t.eq(
+    M.journalError(pushed),
+    "RESOLVE: Cannot resolve host address: vpn.example.com:1194 (Name or service not known)"
+  )
+})
+
+t.test("authentication failure outranks the cascade behind it", () => {
+  const cascade = [
+    "Starting OpenVPN tunnel for x...",
+    "TLS Error: TLS key negotiation failed to occur within 60 seconds",
+    "AUTH: Received control message: AUTH_FAILED",
+    "Exiting due to fatal error"
+  ].join("\n")
+  t.eq(M.journalError(cascade), "AUTH: Received control message: AUTH_FAILED")
+})
+
+t.test("says nothing rather than something wrong", () => {
+  // With only systemd's bookkeeping to go on there is no reason to report, and
+  // the caller keeps the message it already had.
+  t.eq(M.journalError(""), "")
+  t.eq(M.journalError([
+    "Starting OpenVPN tunnel for x...",
+    "openvpn-client@x.service: Failed with result 'exit-code'.",
+    "Failed to start OpenVPN tunnel for x."
+  ].join("\n")), "")
+})
+
+t.test("an unrecognised failure falls back to the last thing said", () => {
+  t.eq(M.journalError([
+    "Starting OpenVPN tunnel for x...",
+    "something the daemon has never said before",
+    "Failed to start OpenVPN tunnel for x."
+  ].join("\n")), "something the daemon has never said before")
+})
+
+t.test("the job-failed boilerplate keeps its sentence", () => {
+  // The "See ..." pointer used to survive and push the message past the
+  // truncation cap, which is what the panel actually displayed.
+  const boilerplate = 'Job for openvpn-client@x.service failed because the '
+    + 'control process exited with error code. See "systemctl status '
+    + 'openvpn-client@x.service" and "journalctl -xeu openvpn-client@x.service" '
+    + 'for details.'
+  const cleaned = M.cleanError(boilerplate)
+  t.eq(cleaned, "Job for openvpn-client@x.service failed because the control process exited with error code.")
+  t.ok(cleaned.indexOf("…") === -1, "and is no longer truncated")
+})
+
 t.done()

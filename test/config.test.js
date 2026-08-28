@@ -259,4 +259,46 @@ t.test("errors surface for a bad file rather than throwing", () => {
   t.ok(p.errors.length > 0)
 })
 
+t.suite("hook targets")
+
+// The hook that actually broke a working profile on 2026-08-27: the package
+// providing it was removed, the config still parsed and imported cleanly, and
+// the failure only appeared at connect time.
+const WITH_HOOK = [
+  "client",
+  "dev tun",
+  "remote vpn.example.com 1194",
+  "script-security 2",
+  "up /usr/bin/update-systemd-resolved",
+  "down /usr/bin/update-systemd-resolved"
+].join("\n")
+
+t.test("hands absolute hook paths back for the caller to look for", () => {
+  const p = C.plan(WITH_HOOK, { name: "h", sourceDir: "/t" })
+  t.eq(p.hookTargets.length, 2)
+  t.eq(p.hookTargets[0], "/usr/bin/update-systemd-resolved")
+})
+
+t.test("the hook itself is never rewritten", () => {
+  // A hook lives wherever it was installed. Only data files move.
+  const p = C.plan(WITH_HOOK, { name: "h", sourceDir: "/t" })
+  t.ok(p.content.indexOf("up /usr/bin/update-systemd-resolved") !== -1)
+  t.eq(p.assets.length, 0)
+})
+
+t.test("a hook under /home warns instead, and is not double-reported", () => {
+  // That one is already a hard problem (ProtectHome) with its own message;
+  // adding "not on this system" to it would be wrong as well as noisy.
+  const p = C.plan("client\nremote h 1\nup /home/you/hook.sh", { name: "h", sourceDir: "/t" })
+  t.eq(p.hookTargets.length, 0)
+  t.ok(p.warnings.length === 1)
+})
+
+t.test("a bare command name is not treated as a path", () => {
+  // `up systemd-resolved-helper` resolves through the daemon's own lookup,
+  // not ours — checking it against the filesystem would warn wrongly.
+  const p = C.plan("client\nremote h 1\nup some-helper", { name: "h", sourceDir: "/t" })
+  t.eq(p.hookTargets.length, 0)
+})
+
 t.done()

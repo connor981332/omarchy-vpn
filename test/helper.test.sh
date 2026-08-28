@@ -116,6 +116,58 @@ else
   fail=$((fail + 1))
 fi
 
+echo "# stage-profile reports a hook that is not on this system"
+# The unprivileged half. A hook is never staged — it stays where it was
+# installed — so the only thing worth doing at import time is looking, which
+# the pure config parser cannot do.
+STAGER="$ROOT/bin/stage-profile"
+STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/__test-hooks"
+
+out="$(printf 'client\n' | XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" \
+  bash "$STAGER" "$STAGING" "__test-hooks.conf" \
+  --hook /usr/bin/env --hook /usr/bin/definitely-not-installed 2>&1)"
+code=$?
+rm -rf -- "$STAGING"
+
+if [[ $code -ne 0 ]]; then
+  echo "not ok - stage-profile accepts --hook"
+  echo "$out" | sed 's/^/  /'
+  fail=$((fail + 1))
+else
+  echo "ok - stage-profile accepts --hook"
+  pass=$((pass + 1))
+fi
+
+if [[ $out == *"missing-hook: /usr/bin/definitely-not-installed"* ]]; then
+  echo "ok - reports the hook that is absent"
+  pass=$((pass + 1))
+else
+  echo "not ok - reports the hook that is absent"
+  echo "$out" | sed 's/^/  /'
+  fail=$((fail + 1))
+fi
+
+# The half that matters more: a hook that IS present must stay silent, or every
+# working profile grows a false warning at import.
+if [[ $out != *"missing-hook: /usr/bin/env"* ]]; then
+  echo "ok - stays quiet about a hook that is present"
+  pass=$((pass + 1))
+else
+  echo "not ok - warned about a hook that exists"
+  echo "$out" | sed 's/^/  /'
+  fail=$((fail + 1))
+fi
+
+# A missing hook is a warning, not a refusal: it may legitimately be installed
+# before the tunnel is first used.
+if [[ $code -eq 0 ]]; then
+  echo "ok - a missing hook does not abort the import"
+  pass=$((pass + 1))
+else
+  echo "not ok - a missing hook aborted the import"
+  fail=$((fail + 1))
+fi
+
 echo "1..$((pass + fail))"
 echo "# pass $pass  fail $fail"
 [[ $fail -eq 0 ]]

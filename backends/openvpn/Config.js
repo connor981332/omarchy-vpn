@@ -199,6 +199,11 @@ function plan(text, options) {
   var errors = validate(parsed)
   var warnings = []
   var assets = []
+  // Hook targets outside /home, for the caller to check against the real
+  // filesystem. A hook that points at a path which is simply not installed
+  // parses cleanly, imports cleanly, and only fails at connect time — and
+  // this file is pure, so it cannot look. See stage-profile's --hook.
+  var hookTargets = []
   var seen = {}
 
   var out = []
@@ -215,6 +220,8 @@ function plan(text, options) {
       if (target.indexOf("/home/") === 0 || target.indexOf("~") === 0) {
         warnings.push("`" + line.key + " " + target + "` points into your home directory, "
           + "which the VPN service cannot read. Move the script somewhere outside /home.")
+      } else if (target.indexOf("/") === 0) {
+        hookTargets.push(target)
       }
       out.push(line.raw)
       continue
@@ -251,6 +258,7 @@ function plan(text, options) {
     endpoint: endpoint(parsed),
     content: out.join("\n").replace(/\n+$/, "") + "\n",
     assets: assets,
+    hookTargets: hookTargets,
     warnings: warnings,
     errors: errors
   }

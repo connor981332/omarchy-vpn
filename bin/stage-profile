@@ -14,7 +14,11 @@
 #
 # Usage:
 #   stage-profile <staging-dir> <config-filename> [--asset <source> <target>]...
+#                 [--hook <path>]...
 #   ...with the config text on stdin.
+#
+# Prints `missing-hook: <path>` for every --hook that is not on this system,
+# then the staging directory.
 
 set -euo pipefail
 
@@ -53,6 +57,15 @@ cat > "$staging/$config_name"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --hook)
+      # A hook is not staged — it stays wherever it is installed. We only look,
+      # because the config parser is pure and cannot. Reported rather than
+      # fatal: the hook may legitimately arrive before the tunnel is first used.
+      hook="${2-}"
+      [[ -n $hook ]] || die "--hook needs <path>"
+      [[ -e $hook ]] || echo "missing-hook: $hook"
+      shift 2
+      ;;
     --asset)
       source="${2-}"
       target="${3-}"

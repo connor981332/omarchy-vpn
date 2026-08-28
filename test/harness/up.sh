@@ -22,6 +22,9 @@ NS="vpnharness"
 # exactly the case that catches an instance name being escaped when it must
 # not be. A profile called "harness" would pass either way and prove nothing.
 PROFILE="harness-test"
+# A second profile, identical but for a hook that is not installed. It exists
+# to prove the panel reports the daemon's reason and not systemd's boilerplate.
+BAD_PROFILE="harness-badhook"
 SERVER_IP="10.77.0.1"
 HOST_IP="10.77.0.2"
 UNIT="openvpn-client@${PROFILE}.service"
@@ -82,6 +85,8 @@ cleanup() {
   systemctl stop "$UNIT" >/dev/null 2>&1 || true
   [[ -n $SERVER_PID ]] && kill "$SERVER_PID" >/dev/null 2>&1
   "$ROOT/bin/install-profile" remove openvpn "$PROFILE" >/dev/null 2>&1 || true
+  systemctl stop "openvpn-client@${BAD_PROFILE}.service" >/dev/null 2>&1 || true
+  "$ROOT/bin/install-profile" remove openvpn "$BAD_PROFILE" >/dev/null 2>&1 || true
   ip netns pids "$NS" 2>/dev/null | xargs -r kill >/dev/null 2>&1
   ip netns del "$NS" >/dev/null 2>&1 || true
   ip link del veth-h >/dev/null 2>&1 || true
@@ -311,6 +316,72 @@ check "the profile was removed" $?
 
 test -f "/etc/openvpn/client/$PROFILE.conf"
 check "no config file is left behind" $(( $? == 1 ? 0 : 1 ))
+
+# --------------------------------------------------------- why it failed
+
+# The gap this closes: `systemctl start` prints only that the job failed, so
+# the panel used to show systemd's boilerplate while the actual reason sat in
+# the journal. A hook pointing at a path that is not installed is the most
+# likely version of this a stranger will hit — the config parses and imports
+# cleanly, and nothing objects until connect time.
+echo "# a failed start explains itself"
+
+BAD_UNIT="openvpn-client@${BAD_PROFILE}.service"
+BAD_HOOK="/usr/lib/connor-vpn-harness-hook-that-is-not-installed"
+BAD_STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/$BAD_PROFILE"
+
+{ cat "$WORK/rewritten.conf"; echo "script-security 2"; echo "up $BAD_HOOK"; } \
+  > "$WORK/badhook.conf"
+
+"$ROOT/bin/stage-profile" "$BAD_STAGING" "$BAD_PROFILE.conf" "${STAGE_ARGS[@]}" \
+  --hook "$BAD_HOOK" < "$WORK/badhook.conf" > "$WORK/stage-badhook.out"
+check "staged the profile with the bogus hook" $?
+
+grep -q "^missing-hook: $BAD_HOOK\$" "$WORK/stage-badhook.out"
+check "import notices the hook is not on this system" $? \
+  "$(cat "$WORK/stage-badhook.out")"
+
+"$ROOT/bin/install-profile" install openvpn "$BAD_PROFILE" "$BAD_STAGING" >/dev/null
+check "installed the deliberately broken profile" $?
+
+# The point of the whole section: this must fail, and it must fail for the
+# reason we are about to go looking for.
+systemctl start "$BAD_UNIT" > "$WORK/start.out" 2> "$WORK/start.err"
+check "starting a profile with a missing hook fails" $(( $? != 0 ? 0 : 1 )) \
+  "$(cat "$WORK/start.out" "$WORK/start.err")"
+
+# What the panel used to show, and what it shows now, from the same two sources
+# the widget itself reads.
+SYSTEMD_SAYS="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  const fs = require("fs")
+  console.log(M.cleanError(fs.readFileSync(process.argv[1], "utf8")))
+' "$WORK/start.err")"
+
+journalctl -u "$BAD_UNIT" -n 40 --no-pager -o cat > "$WORK/journal.txt" 2>&1
+check "the unit journal is readable" $?
+
+PANEL_SAYS="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  const fs = require("fs")
+  console.log(M.journalError(fs.readFileSync(process.argv[1], "utf8")))
+' "$WORK/journal.txt")"
+
+echo "# systemd said:   $SYSTEMD_SAYS"
+echo "# the panel says: $PANEL_SAYS"
+
+[[ $PANEL_SAYS == *"$BAD_HOOK"* ]]
+check "the panel names the missing file" $? \
+  "got: $PANEL_SAYS"$'\n'"journal:"$'\n'"$(cat "$WORK/journal.txt")"
+
+# And it is a real improvement, not the same boilerplate reformatted.
+[[ $PANEL_SAYS != "$SYSTEMD_SAYS" && $PANEL_SAYS != *"Job for"* ]]
+check "and not systemd's job-failed boilerplate" $? "got: $PANEL_SAYS"
+
+"$ROOT/bin/install-profile" remove openvpn "$BAD_PROFILE" >/dev/null
+check "the broken profile was removed" $?
 
 echo "1..$((pass + fail))"
 echo "# pass $pass  fail $fail"

@@ -63,6 +63,14 @@ Item {
   property var _devicesBefore: []
   property string _awaitingDeviceFor: ""
 
+  // The unit the last command acted on, and a counter that increments with
+  // every command. The journal is read asynchronously after a failure, so the
+  // answer can arrive once the user has already tried something else — the
+  // counter is what stops a stale reason from landing on a fresh attempt.
+  property string _actionUnit: ""
+  property int _actionSeq: 0
+  property int _journalSeq: -1
+
   // Import state machine.
   property string _installProtocol: ""
 
@@ -339,6 +347,8 @@ Item {
     actionStatus = "Connecting to " + tunnel.name + "…"
     _awaitingDeviceFor = tunnel.id
     _devicesBefore = _currentDevices()
+    _actionUnit = tunnel.unit
+    _actionSeq += 1
     actionProcess.command = ["systemctl", "start", tunnel.unit]
     actionProcess.running = true
     pendingTimeout.restart()
@@ -351,6 +361,8 @@ Item {
     lastError = ""
     actionStatus = "Disconnecting " + tunnel.name + "…"
     _awaitingDeviceFor = ""
+    _actionUnit = tunnel.unit
+    _actionSeq += 1
     actionProcess.command = ["systemctl", "stop", tunnel.unit]
     actionProcess.running = true
     pendingTimeout.restart()
@@ -534,10 +546,31 @@ Item {
     for (var i = 0; i < plan.assets.length; i++) {
       command.push("--asset", plan.assets[i].source, plan.assets[i].target)
     }
+    // Hooks are not staged, only looked for. The helper runs as the user and
+    // can see the filesystem the pure config parser cannot.
+    var hooks = plan.hookTargets || []
+    for (var h = 0; h < hooks.length; h++) command.push("--hook", hooks[h])
 
     actionStatus = "Preparing " + _importName + "…"
     importProcess.command = command
     importProcess.running = true
+  }
+
+  // The staging helper reports a hook it could not find as `missing-hook: <p>`
+  // on stdout. Saying so here is the whole point: the profile is valid, so
+  // nothing else would object until the tunnel failed to come up.
+  function _warnAboutMissingHooks(output) {
+    var lines = String(output).split(/\r?\n/)
+    var next = warnings.slice()
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
+      if (line.indexOf("missing-hook: ") !== 0) continue
+      var path = line.substring("missing-hook: ".length)
+      next.push("This profile runs `" + path + "`, which is not on this system. "
+        + "The tunnel will fail to start until whatever provides it is installed.")
+    }
+    // Reassign: mutating in place fires no change notification.
+    if (next.length !== warnings.length) warnings = next
   }
 
   function _installStaged() {
@@ -732,9 +765,41 @@ Item {
         // looks like from here, and "Command failed" would be a lie.
         var text = Model.cleanError(String(actionErr.text || ""))
         root.lastError = text !== "" ? text : "Authorization was declined."
+        // systemctl reports only that the job failed. The daemon's own reason
+        // is in the journal, so go and read it — but show the message above
+        // straight away, because that read is not instant and an empty panel
+        // during it would look like nothing happened.
+        root._readJournal()
       }
       settleTimer.restart()
       root.refresh()
+    }
+  }
+
+  // Reading a system unit's journal needs no privilege, so this costs no
+  // second polkit prompt. Deliberately not run on success: it is the only
+  // process here that exists purely to improve an error message.
+  function _readJournal() {
+    if (_actionUnit === "" || journalProcess.running) return
+    _journalSeq = _actionSeq
+    journalProcess.command = ["journalctl", "-u", _actionUnit, "-n", "40",
+                              "--no-pager", "-o", "cat"]
+    journalProcess.running = true
+  }
+
+  Process {
+    id: journalProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: journalOut; waitForEnd: true }
+    onExited: function(exitCode) {
+      // A newer command has already been issued: whatever this says is about
+      // the previous one, and replacing the current message with it would be
+      // actively misleading.
+      if (root._journalSeq !== root._actionSeq) return
+      if (exitCode !== 0 || root.lastError === "") return
+      var reason = Model.journalError(String(journalOut.text || ""))
+      if (reason !== "") root.lastError = reason
     }
   }
 
@@ -822,7 +887,7 @@ Item {
     running: false
     command: []
     stdinEnabled: true
-    stdout: StdioCollector { waitForEnd: true }
+    stdout: StdioCollector { id: importOut; waitForEnd: true }
     stderr: StdioCollector { id: importErr; waitForEnd: true }
     onStarted: {
       // The rewritten config goes in on stdin so it never touches a file the
@@ -832,6 +897,7 @@ Item {
     }
     onExited: function(exitCode) {
       if (exitCode === 0) {
+        root._warnAboutMissingHooks(String(importOut.text || ""))
         root._installStaged()
       } else {
         root.actionStatus = ""

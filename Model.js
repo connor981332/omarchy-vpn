@@ -428,8 +428,93 @@ function statusText(tunnels, pendingName) {
 function cleanError(text) {
   var value = String(text || "").replace(/\s+/g, " ").trim()
   value = value.replace(/^(Error|Failed to \w+ \S+):\s*/i, "")
-  value = value.replace(/^See ['"]?systemctl status.*$/i, "")
+  // The "See ..." pointer is the tail of a one-line job-failure message, not a
+  // line of its own — anchoring this at ^ meant it never fired once the
+  // whitespace above had been collapsed, and the truncation that followed was
+  // what actually reached the panel.
+  value = value.replace(/\s*See ['"]?systemctl status.*$/i, "")
   return value.length > 140 ? value.substring(0, 137) + "…" : value
+}
+
+// ------------------------------------------------------------ journal errors
+
+// `systemctl start` reports only that the job failed; the daemon's own reason
+// goes to the journal and never crosses stderr. So a failed start is followed
+// by a read of `journalctl -o cat`, and this picks the one line worth showing.
+//
+// Two rules carry it. Scope to the CURRENT attempt — the journal holds every
+// previous run of the unit, and a stale error from an hour ago is worse than
+// no error at all. Then rank, because most of what is left is bookkeeping and
+// a few lines look like failures without being one.
+
+// Never the answer: systemd's job machinery, the daemon's own follow-ups to an
+// error it has already explained, and routine progress chatter.
+var _JOURNAL_NOISE = [
+  /^(Starting|Started|Stopping|Stopped|Reached|Created) /,
+  /^Failed to start /,
+  /: (Main process exited|Failed with result|Scheduled restart|Start request repeated|Deactivated successfully|Consumed )/,
+  /^Options error: Please correct this error\./i,
+  /^Use --help for more information\./i,
+  // Pushed by the server and merely unrecognised by this client. It prints on
+  // a perfectly healthy connection — observed on a working tunnel — so it must
+  // never be reported as the cause of a failure.
+  /^Options error: Unrecognized option or missing or extra parameter\(s\) in \[PUSH-OPTIONS\]/i,
+  /^(net_|OPTIONS IMPORT|PUSH:|MANAGEMENT:|VERIFY OK|Validating|Attempting|Outgoing|Incoming|Control Channel|Data Channel|Peer Connection Initiated|Timers:|Protocol options:|library versions|Initialization Sequence)/,
+  /^(WARNING|NOTE|DEPRECATED OPTION):/,
+  /^SIG(TERM|HUP|INT|USR1)/,
+  /^event_wait /
+]
+
+// The lines that are the cause, in the order we would rather report them.
+// Authentication first: it is the one a user can act on immediately, and it is
+// usually followed by a cascade of lower-level errors that would otherwise win.
+var _JOURNAL_STRONG = [
+  /AUTH_FAILED|auth-failure/i,
+  /^Options error:/i,
+  /(No such file or directory|Permission denied|Cannot open|Cannot resolve|Cannot load)/i,
+  /^(TLS Error|RESOLVE:|Could not|Unable to)/i,
+  /Exiting due to fatal error/i
+]
+
+function _isJournalNoise(line) {
+  for (var i = 0; i < _JOURNAL_NOISE.length; i++) {
+    if (_JOURNAL_NOISE[i].test(line)) return true
+  }
+  return false
+}
+
+// Returns "" when the journal says nothing useful, so the caller can keep
+// whatever it already had rather than replacing it with a worse message.
+function journalError(text) {
+  var all = String(text || "").split(/\r?\n/)
+
+  // systemd's "Starting <description>..." is the boundary between attempts.
+  // The last one begins the attempt that just failed.
+  var start = -1
+  var i
+  for (i = 0; i < all.length; i++) {
+    if (/^Starting /.test(all[i].trim())) start = i
+  }
+
+  var lines = []
+  for (i = start + 1; i < all.length; i++) {
+    var line = all[i].replace(/\s+/g, " ").trim()
+    if (line !== "" && !_isJournalNoise(line)) lines.push(line)
+  }
+  if (lines.length === 0) return ""
+
+  // Among recognised causes, the FIRST wins: what follows it is usually the
+  // fallout rather than the reason.
+  for (var p = 0; p < _JOURNAL_STRONG.length; p++) {
+    for (i = 0; i < lines.length; i++) {
+      if (_JOURNAL_STRONG[p].test(lines[i])) return cleanError(lines[i])
+    }
+  }
+
+  // Nothing recognised. Fall back to the LAST thing said before the process
+  // died, which is the opposite choice for the opposite reason: with no
+  // pattern to trust, proximity to the failure is the only signal left.
+  return cleanError(lines[lines.length - 1])
 }
 
 // ------------------------------------------------------------------- internals

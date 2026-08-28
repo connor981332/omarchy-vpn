@@ -139,7 +139,10 @@ leaves your machine. Everything else is read from the kernel.
 
 ## When something goes wrong
 
-The widget surfaces the cause in the panel. For the full story:
+When a tunnel fails to start, the widget reads that unit's journal and shows
+the daemon's own reason — `systemctl start` reports only that the job failed,
+which is never the useful half. Reading the journal needs no privilege, so
+this costs no extra authorization prompt. For the full story:
 
 ```bash
 systemctl status openvpn-client@<profile>

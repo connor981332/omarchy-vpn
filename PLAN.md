@@ -192,6 +192,33 @@ Work:
 started, and the panel names the missing file rather than systemd's boilerplate;
 Tier 2 asserts it.
 
+#### Status: built 2026-08-27, awaiting the Tier 2 run
+
+- `Model.journalError()` scopes the journal to the attempt that just failed
+  (systemd's `Starting …` line is the boundary — the journal keeps every
+  previous run, and a stale reason is worse than none), then ranks what is
+  left. Written against captured output from the real failure, not fixtures.
+- `Service.qml` reads `journalctl -u <unit> -n 40 -o cat` after a failed
+  command, showing systemd's message immediately and replacing it when the
+  better one arrives. A sequence counter drops the answer if a newer command
+  has been issued since.
+- **The panel's truncation was not an elide.** The error row already wraps.
+  `cleanError()`'s `See "systemctl status …"` strip was anchored at `^`, so it
+  never fired once the message had been collapsed to one line — the pointer
+  survived, pushed the string past the 140-character cap, and what the user
+  saw was our own ellipsis. Fixed; the boilerplate now keeps its sentence and
+  is a usable fallback for when the journal says nothing.
+- **Import now warns too**, which is the cheaper half: `Config.plan()` returns
+  the absolute hook paths it cannot check (it is pure), `bin/stage-profile`
+  looks for them as the user and prints `missing-hook: <path>`, and the panel
+  turns that into a warning *before* the polkit prompt. A hook under `/home`
+  keeps its existing `ProtectHome` warning and is not double-reported.
+- Tests: Tier 1 +7 (`journalError` and the truncation), config +4
+  (`hookTargets`), helper +4 (`stage-profile --hook`, including that a hook
+  which *is* present stays silent), Tier 2 +8.
+
+Remaining: run `./run-tests.sh --integration` to exercise the Tier 2 block.
+
 ---
 
 ## Phase 3 — Credentials
@@ -300,12 +327,12 @@ asserts both, in a namespace, without touching the host's rules.
 The existing four tiers stay. Each phase adds to them rather than inventing a
 fifth:
 
-- **Tier 1** — WireGuard config parsing; `cleanError()` against captured
-  journal text; credential redaction (assert no secret ever appears in a
+- **Tier 1** — WireGuard config parsing; ~~`cleanError()` against captured
+  journal text~~ **done**; credential redaction (assert no secret ever appears in a
   command array or an error string).
-- **Tier 2** — a wg tunnel beside the OpenVPN one; a profile with a bogus `up`
-  path, asserting the panel reports the missing file and not systemd's
-  boilerplate; the kill-switch assertions, run inside the namespace so the
+- **Tier 2** — a wg tunnel beside the OpenVPN one; ~~a profile with a bogus
+  `up` path, asserting the panel reports the missing file and not systemd's
+  boilerplate~~ **written, not yet run**; the kill-switch assertions, run inside the namespace so the
   host's rules are never touched.
 - **Tier 3** — `state` JSON grows kill-switch status and credential presence
   (presence only, never the secret).
