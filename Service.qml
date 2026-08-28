@@ -422,6 +422,7 @@ Item {
     if (!backend) return
     if (installProcess.running) return
     actionStatus = "Installing " + backend.label + "…"
+    lastError = ""
     _installProtocol = protocol
     installProcess.command = ["omarchy-install-app", backend.label, backend.packageName]
     installProcess.running = true
@@ -450,12 +451,29 @@ Item {
   // timer body so the call-site audit in test/dependency.test.sh can see it.
   function _watchTick() {
     var protocol = _depWatchProtocol
-    if (protocol === "" || _depWatchTicks <= 0) {
+    if (protocol === "") {
       _stopDependencyWatch()
+      return
+    }
+    if (_depWatchTicks <= 0) {
+      _dependencyWatchExpired(protocol)
       return
     }
     _depWatchTicks -= 1
     _ensureDependency(protocol, "watch", null, true)
+  }
+
+  // The budget ran out. Clearing the watch on its own flips the button from
+  // "Waiting…" back to "Install" with no explanation, which makes a declined
+  // install, a failed one and a slow mirror all look identical. Say what
+  // happened and name the two ways forward.
+  function _dependencyWatchExpired(protocol) {
+    var backend = backendFor(protocol)
+    _stopDependencyWatch()
+    if (!backend) return
+    lastError = backend.label + " still isn't installed. Finish the install in"
+      + " the terminal and press Re-check, or install the " + backend.packageName
+      + " package by hand."
   }
 
   function _stopDependencyWatch() {
@@ -643,8 +661,6 @@ Item {
     onTriggered: telemetry.sample()
   }
 
-  // A tunnel takes a moment to settle after systemctl returns, so poll again
-  // shortly rather than waiting out the full interval.
   // Post-install polling. Cheap (a fork every 3s), bounded, and it stops the
   // instant the probe comes back clean.
   Timer {
@@ -654,6 +670,8 @@ Item {
     onTriggered: root._watchTick()
   }
 
+  // A tunnel takes a moment to settle after systemctl returns, so poll again
+  // shortly rather than waiting out the full interval.
   Timer {
     id: settleTimer
     interval: 1200

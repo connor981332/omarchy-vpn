@@ -135,7 +135,34 @@ else
   check "re-checking does not blink the card" 0
 fi
 
-# 6. The manual escape hatch survives. The card must still offer Re-check.
+# 6. Giving up must not be silent. Reverting the button from "Waiting..." to
+#    "Install" with no message makes a declined install, a failed install and a
+#    slow mirror indistinguishable.
+if grep -n 'function _dependencyWatchExpired' -A 8 Service.qml | grep -q 'lastError'; then
+  check "running out of budget explains itself" 0
+else
+  check "running out of budget explains itself" 1 \
+    "$(grep -n 'function _dependencyWatchExpired' -A 8 Service.qml)"
+fi
+
+# 7. And the exhausted-budget branch must route through that function rather
+#    than stopping silently, which is the regression that would restore the gap.
+if grep -n '_depWatchTicks <= 0' -A 2 Service.qml | grep -q '_dependencyWatchExpired'; then
+  check "an exhausted budget takes the explaining path" 0
+else
+  check "an exhausted budget takes the explaining path" 1 \
+    "$(grep -n '_depWatchTicks <= 0' -A 2 Service.qml)"
+fi
+
+# 8. A retry must not sit under the previous attempt's failure message.
+if grep -n 'function installDependency' -A 10 Service.qml | grep -q 'lastError = ""'; then
+  check "starting an install clears a stale failure message" 0
+else
+  check "starting an install clears a stale failure message" 1 \
+    "$(grep -n 'function installDependency' -A 10 Service.qml)"
+fi
+
+# 9. The manual escape hatch survives. The card must still offer Re-check.
 if grep -q 'onClicked: vpn.recheckDependency' Panel.qml; then
   check "the manual Re-check button is still there" 0
 else

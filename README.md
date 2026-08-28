@@ -197,6 +197,15 @@ are not.
 | `bin/stage-profile` | Unprivileged staging, run as you |
 | `test/` | The suite; `test/harness/` is the real-tunnel tier |
 
+## Authorship
+
+This plugin was built with [Claude Code](https://claude.com/claude-code) as a
+coding assistant, under my direction — I set the requirements and architecture
+decisions (see `CLAUDE.md` and `REQUIREMENTS.md`), reviewed and tested every
+change, and I'm the sole author of record on the commit history. Noting it
+here in the interest of transparency, since the target audience is strangers
+evaluating this on a plugin marketplace.
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
