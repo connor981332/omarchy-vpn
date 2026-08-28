@@ -24,7 +24,7 @@ scoped features:
 
 - NM's importer drops `script-security` and `up`/`down` hooks, silently
   changing the behavior of the existing working profile
-  (`~/.ovpn/framework-omarchy.ovpn` uses `update-systemd-resolved`).
+  (the test profile uses `update-systemd-resolved`).
 - No kill switch. Adding nftables beside NM's routing means two owners of the
   route table.
 - No per-app split tunneling (needs cgroup/netns + fwmark; NM can only express
@@ -166,11 +166,14 @@ does **not** discriminate between the nmcli and direct paths. Capabilities do.
 
 ## Test profile
 
-`~/.ovpn/framework-omarchy.ovpn` — PiVPN, `proto udp`, `remote vpn.example.com
-1194`, `dev tun`, AES-256-CBC / SHA256, `tls-crypt`, `verify-x509-name`,
-`askpass` (key passphrase in `~/.ovpn/password`), DNS via
-`update-systemd-resolved` + `dhcp-option DNS 10.0.0.2`.
+A self-hosted PiVPN profile: `proto udp`, `dev tun`, AES-256-CBC / SHA256,
+`tls-crypt`, `verify-x509-name`, `askpass` (key passphrase in a file beside the
+config), DNS via `update-systemd-resolved` plus a pushed `dhcp-option DNS`.
 Exercises inline certs, askpass, and script hooks — a good worst case.
+
+The real hostname and addresses are deliberately not recorded here. This file
+ships in a public repository, and naming the endpoint of a personal VPN tells
+every reader where it lives. Fixtures use `vpn.example.com` (RFC 2606).
 
 ## Open items
 

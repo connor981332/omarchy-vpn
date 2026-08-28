@@ -11,12 +11,40 @@ The widget drives the **stock systemd template units** that ship with the
 and no polkit policy of its own — privileged operations authenticate through
 the polkit agent Omarchy already runs.
 
+## What runs with privilege
+
+Omarchy plugins run **unsandboxed, inside the shell process, with your
+permissions** — that is true of every plugin, not just this one, so it is worth
+being able to see exactly what this one does with that access. Three things,
+and nothing else:
+
+| What | How | When |
+|---|---|---|
+| `systemctl start`/`stop` on a tunnel's unit | The stock `org.freedesktop.systemd1.manage-units` polkit action | You connect or disconnect |
+| `bin/install-profile` | `pkexec` | You import, delete, or save credentials for a profile |
+| `bin/killswitch` | `pkexec` | You turn the kill switch on or off |
+
+Both helpers are short shell scripts in this repository, meant to be read.
+They treat their caller as untrusted, because it is: the destination directory
+is chosen inside the helper rather than taken from an argument, profile names
+and device names must match strict patterns, and passwords arrive on stdin so
+they never appear in `/proc/<pid>/cmdline`.
+
+**No daemon, no unit file, and no polkit policy is installed.** Everything goes
+through the polkit agent Omarchy already runs, and every prompt is one you
+triggered. Nothing is done in the background: the widget polls with unprivileged
+kernel reads only.
+
+The one thing that leaves your machine is the optional exit-IP lookup, which is
+off by default — see the privacy note below.
+
 ## Requirements
 
 | Package | Needed for | In Omarchy's base? |
 |---|---|---|
 | `openvpn` | OpenVPN profiles. Provides `openvpn-client@.service`. | **No — install it** |
 | `wireguard-tools` | WireGuard profiles. Provides `wg-quick@.service`. | **No — install it** |
+| `nftables` | The kill switch. | Yes — `ufw` needs `iptables`, which needs this |
 
 You only need the one your profiles use. Neither is probed until you reach for
 it, so a WireGuard-only user is never told about OpenVPN.
