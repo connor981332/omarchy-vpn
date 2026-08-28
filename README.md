@@ -368,11 +368,20 @@ are not.
 | `bin/killswitch` | The nftables helper, run via `pkexec` |
 | `test/` | The suite; `test/harness/` is the real-tunnel tier |
 
+### Documentation
+
+| File | For |
+|---|---|
+| `README.md` | Using it — this file |
+| `ARCHITECTURE.md` | How it is built and why. **Start here if you are auditing it.** |
+| `FUTURE_WORK.md` | What was deliberately left out, and what each item would take |
+| `CLAUDE.md` | Working notes: environment facts and traps that cost a debugging session |
+
 ## Authorship
 
 This plugin was built with [Claude Code](https://claude.com/claude-code) as a
 coding assistant, under my direction — I set the requirements and architecture
-decisions (see `CLAUDE.md` and `REQUIREMENTS.md`), reviewed and tested every
+decisions (see `ARCHITECTURE.md`), reviewed and tested every
 change, and I'm the sole author of record on the commit history. Noting it
 here in the interest of transparency, since the target audience is strangers
 evaluating this on a plugin marketplace.

@@ -7,8 +7,12 @@ here affect the running shell directly.
 Target audience is **strangers on the plugin marketplace**, not this machine.
 That constraint drives most of the decisions below.
 
-Scope decisions live in `REQUIREMENTS.md`. `PLAN.md` is the *forward* plan —
-the MVP plan that produced this code shipped on 2026-08-27 and was replaced.
+**Where the docs live.** `ARCHITECTURE.md` is the design as built and is the
+canonical reference — read it first. `FUTURE_WORK.md` is what was deliberately
+left out and what each item would take. `README.md` is for users. This file is
+the working notes: environment facts and traps that each cost a debugging
+session, kept because they are expensive to rediscover and belong nowhere
+else. Where this file and `ARCHITECTURE.md` overlap, `ARCHITECTURE.md` wins.
 
 ## Architecture
 
@@ -390,30 +394,24 @@ a marker (`ran:`) so "found nothing" and "never ran" cannot be confused.
 
 ## Still open
 
-- ~~`wg-quick@.service` shipping with `wireguard-tools`.~~ **ANSWERED: it
-  does** (Phase 2), along with its sandboxing directives — there are none —
-  and `/etc/wireguard` being 0700 root:root by the package itself rather than
-  by tmpfiles.
-- ~~Whether NetworkManager tries to manage `tun0`.~~ **ANSWERED: it does not.**
-  During a Tier 2 run NM logged `manager: (tun0): new Generic device` and
-  `carrier: link connected` — it registers an externally created tun device as
-  Generic and observes it, but assigns no address, route or DNS. The harness's
-  route, address and resolver assertions all passed while that device was up,
-  which is the evidence it did not interfere. No `[keyfile] unmanaged-devices`
-  entry is needed. (Caveat: the harness tunnel is short-lived and deliberately
-  does not push a default route. A full-tunnel profile is worth one more look.)
-- ~~Secret storage for `auth-user-pass` credentials.~~ **DONE (Phase 3).** A
-  bare `auth-user-pass` is rewritten to `auth-user-pass <name>.auth`, and the
-  helper's `set-credentials` writes that file root-owned 0600 from stdin. The
-  panel offers the two fields on the row; `AUTH_FAILED` is translated into a
-  sentence that names the cause. Verified against a real server that checks
-  the values, in Tier 2.
-- **The one thing left that a machine cannot answer:** a real connection to a
-  commercial full-tunnel provider. That is also the last look at the
-  NetworkManager caveat above, since the only profile NM has been observed
-  against does not move the default route. Everything else in the four phases
-  is built and tested.
-- Post-MVP, all structurally accommodated but not implemented: split
-  tunnelling, auto-connect on untrusted Wi-Fi, OTP/2FA, exit-IP geo, endpoint
-  latency, profile editing in the UI. (WireGuard landed in Phase 2,
-  credentials in Phase 3, the kill switch in Phase 4.)
+Deliberate omissions and what they would take live in `FUTURE_WORK.md`; the
+built design and its known limitations live in `ARCHITECTURE.md`. Only the
+environment questions belong here.
+
+**ANSWERED: NetworkManager does not try to manage `tun0`.** During an
+integration run NM logged `manager: (tun0): new Generic device` and `carrier:
+link connected` — it registers an externally created tun device as Generic and
+observes it, but assigns no address, route or DNS. The harness's route, address
+and resolver assertions all passed while that device was up, which is the
+evidence it did not interfere. No `[keyfile] unmanaged-devices` entry is
+needed.
+
+**Caveat, and the one thing left that a machine cannot answer.** That harness
+tunnel is short-lived and deliberately does not push a default route. A real
+commercial full-tunnel profile has never been connected, and it is the only way
+to close both this caveat and the question of whether the whole import path
+copes with a provider's config in the wild.
+
+**ANSWERED: `wg-quick@.service` ships with `wireguard-tools`**, it has no
+sandboxing directives at all, and `/etc/wireguard` is 0700 root:root by the
+package itself rather than by tmpfiles.

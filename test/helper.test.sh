@@ -85,7 +85,7 @@ ln -s "$TMP/staging" "$TMP/linked"
 refuses "symlink" install openvpn work "$TMP/linked"
 
 echo "# a missing profile directory is explained, not tripped over"
-# PLAN.md asked whether /etc/openvpn/client exists right after a fresh
+# A question worth settling: does /etc/openvpn/client exist right after a fresh
 # `pacman -S openvpn`. It does: the openvpn package ships
 # /usr/lib/tmpfiles.d/openvpn.conf, and pacman's 21-systemd-tmpfiles.hook runs
 # `systemd-tmpfiles --create` post-transaction, after 20-systemd-sysusers.hook

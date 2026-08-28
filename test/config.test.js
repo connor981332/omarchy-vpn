@@ -3,7 +3,8 @@ const { load } = require("./qmljs")
 const t = require("./tap")
 const C = load("backends/openvpn/Config.js")
 
-// The real test profile from REQUIREMENTS.md, cert bodies elided. It is the
+// The real test profile this was developed against, cert bodies elided and
+// the endpoint replaced with an RFC 2606 name. It is the
 // worst case on purpose: inline blocks, an askpass file under /home, and
 // script hooks.
 const REAL_PROFILE = [

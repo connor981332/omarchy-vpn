@@ -629,7 +629,7 @@ AUTH_SAYS="$(cd "$ROOT" && "$NODE" -e '
 ' "$WORK/journal-auth.txt")"
 echo "# the panel says: $AUTH_SAYS"
 
-# The requirement in PLAN.md, verbatim: failed auth must surface as "wrong
+# The requirement, verbatim: failed auth must surface as "wrong
 # username or password", not as a unit error. `AUTH: Received control message:
 # AUTH_FAILED` is the daemon's own words and they do not say that.
 [[ $AUTH_SAYS == *"rejected the username or password"* ]]

@@ -491,7 +491,7 @@ Item {
 
   // Hands off to Omarchy's themed floating terminal rather than running pacman
   // ourselves. It is a terminal window, but it is user-initiated from our
-  // button and fully auditable, which is the trade PLAN.md settles on.
+  // button and fully auditable, which is the trade ARCHITECTURE.md settles on.
   function installDependency(protocol) {
     var backend = backendFor(protocol)
     if (!backend) return
@@ -787,7 +787,8 @@ Item {
   // attacker is a process running as the user: the session keyring auto-unlocks
   // at login and hands secrets to anything asking, while the profile directory
   // is not readable by an unprivileged process at all. The reasoning, and the
-  // residual risk (an unencrypted backup of /etc), is in PLAN.md and the README.
+  // residual risk (an unencrypted backup of /etc), is in ARCHITECTURE.md and the
+  // README.
   //
   // The password never becomes a command-line argument, and it is held here
   // only for the moment between asking the process to start and its stdin
