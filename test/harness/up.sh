@@ -25,6 +25,16 @@ PROFILE="harness-test"
 # A second profile, identical but for a hook that is not installed. It exists
 # to prove the panel reports the daemon's reason and not systemd's boilerplate.
 BAD_PROFILE="harness-badhook"
+# The WireGuard end. 10 characters, comfortably inside the 15 wg-quick allows,
+# and the interface it creates takes this name exactly — which is the whole
+# point of the deviceFor() seam.
+WG_PROFILE="harness-wg"
+WG_UNIT="wg-quick@${WG_PROFILE}.service"
+WG_SRV_DEV="wgsrv"
+# A subnet of its own, so nothing here can collide with the OpenVPN tunnel's.
+WG_SRV_IP="10.88.1.1"
+WG_CLIENT_IP="10.88.1.2"
+WG_PORT="51820"
 SERVER_IP="10.77.0.1"
 HOST_IP="10.77.0.2"
 UNIT="openvpn-client@${PROFILE}.service"
@@ -87,6 +97,9 @@ cleanup() {
   "$ROOT/bin/install-profile" remove openvpn "$PROFILE" >/dev/null 2>&1 || true
   systemctl stop "openvpn-client@${BAD_PROFILE}.service" >/dev/null 2>&1 || true
   "$ROOT/bin/install-profile" remove openvpn "$BAD_PROFILE" >/dev/null 2>&1 || true
+  systemctl stop "$WG_UNIT" >/dev/null 2>&1 || true
+  "$ROOT/bin/install-profile" remove wireguard "$WG_PROFILE" >/dev/null 2>&1 || true
+  ip netns exec "$NS" ip link del "$WG_SRV_DEV" >/dev/null 2>&1 || true
   ip netns pids "$NS" 2>/dev/null | xargs -r kill >/dev/null 2>&1
   ip netns del "$NS" >/dev/null 2>&1 || true
   ip link del veth-h >/dev/null 2>&1 || true
@@ -404,6 +417,196 @@ check "and not systemd's job-failed boilerplate" $? "got: $PANEL_SAYS"
 
 "$ROOT/bin/install-profile" remove openvpn "$BAD_PROFILE" >/dev/null
 check "the broken profile was removed" $?
+
+# ============================================================== WireGuard
+
+# The second backend, through the same privileged path and the same parsers.
+# What this really tests is the abstraction: if adding a protocol needed more
+# than the one predicted seam, it shows up here as special-casing.
+#
+# SAFETY: AllowedIPs is the tunnel subnet only, never 0.0.0.0/0. A default
+# route would make wg-quick install fwmark rules and take over this machine's
+# traffic for the length of the test.
+echo "# WireGuard"
+
+if ! command -v wg >/dev/null || ! command -v wg-quick >/dev/null; then
+  echo "ok - SKIP: wireguard-tools is not installed"
+  pass=$((pass + 1))
+else
+
+umask 077
+wg genkey > "$WORK/wg-server.key"
+wg pubkey < "$WORK/wg-server.key" > "$WORK/wg-server.pub"
+wg genkey > "$WORK/wg-client.key"
+wg pubkey < "$WORK/wg-client.key" > "$WORK/wg-client.pub"
+test -s "$WORK/wg-server.pub" && test -s "$WORK/wg-client.pub"
+check "generated a throwaway WireGuard keypair for each end" $?
+
+# The far end, built with raw `wg`/`ip` rather than wg-quick: inside the
+# namespace we want no DNS or route machinery, only a peer to talk to.
+ip netns exec "$NS" ip link add "$WG_SRV_DEV" type wireguard
+ip netns exec "$NS" wg set "$WG_SRV_DEV" \
+  listen-port "$WG_PORT" \
+  private-key "$WORK/wg-server.key" \
+  peer "$(cat "$WORK/wg-client.pub")" allowed-ips "$WG_CLIENT_IP/32"
+ip netns exec "$NS" ip addr add "$WG_SRV_IP/24" dev "$WG_SRV_DEV"
+ip netns exec "$NS" ip link set "$WG_SRV_DEV" up
+ip netns exec "$NS" wg show "$WG_SRV_DEV" >/dev/null 2>&1
+check "the WireGuard peer is listening inside the namespace" $?
+
+cat > "$WORK/wg-client.conf" <<WGEOF
+[Interface]
+PrivateKey = $(cat "$WORK/wg-client.key")
+Address = $WG_CLIENT_IP/24
+
+[Peer]
+PublicKey = $(cat "$WORK/wg-server.pub")
+AllowedIPs = 10.88.1.0/24
+Endpoint = $SERVER_IP:$WG_PORT
+PersistentKeepalive = 25
+WGEOF
+
+# Through the plugin's own parser, not a hand-written file: this is what the
+# widget would produce from a profile the user picked.
+WG_PLAN_JSON="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const C = load("backends/wireguard/Config.js")
+  const fs = require("fs")
+  const plan = C.plan(fs.readFileSync(process.argv[1], "utf8"), { name: process.argv[2] })
+  fs.writeFileSync(process.argv[3], plan.content)
+  console.log(JSON.stringify({ errors: plan.errors, warnings: plan.warnings,
+                               endpoint: plan.endpoint, assets: plan.assets.length }))
+' "$WORK/wg-client.conf" "$WG_PROFILE" "$WORK/wg-rewritten.conf")"
+
+echo "$WG_PLAN_JSON" | grep -q '"errors":\[\]'
+check "the generated WireGuard profile plans cleanly" $? "$WG_PLAN_JSON"
+
+echo "$WG_PLAN_JSON" | grep -q "\"endpoint\":\"$SERVER_IP:$WG_PORT\""
+check "the endpoint is read out of [Peer]" $? "$WG_PLAN_JSON"
+
+# The claim that makes this import path simpler than the other one.
+echo "$WG_PLAN_JSON" | grep -q '"assets":0'
+check "a self-contained profile needs no side files" $? "$WG_PLAN_JSON"
+
+WG_STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/$WG_PROFILE"
+"$ROOT/bin/stage-profile" "$WG_STAGING" "$WG_PROFILE.conf" \
+  < "$WORK/wg-rewritten.conf" >/dev/null
+check "staged the WireGuard profile" $?
+
+"$ROOT/bin/install-profile" install wireguard "$WG_PROFILE" "$WG_STAGING" >/dev/null
+check "installed it into /etc/wireguard through the privileged helper" $?
+
+# 0700 root:root, shipped by the package itself. If this ever reads otherwise,
+# the helper's profile_owner() table is wrong.
+WG_DIR_MODE="$(stat -c '%a %U:%G' /etc/wireguard)"
+[[ $WG_DIR_MODE == "700 root:root" ]]
+check "/etc/wireguard is 0700 root:root (got '$WG_DIR_MODE')" $?
+
+# --------------------------------------------------------------- the seam
+
+WG_DEVICES_BEFORE="$(ip -j link)"
+
+systemctl start "$WG_UNIT"
+check "systemctl start returned success" $? \
+  "$(journalctl -u "$WG_UNIT" -n 20 --no-pager -o cat 2>&1)"
+
+for _ in $(seq 1 15); do
+  [[ "$(systemctl is-active "$WG_UNIT")" == "active" ]] && break
+  sleep 1
+done
+[[ "$(systemctl is-active "$WG_UNIT")" == "active" ]]
+check "the unit reached active" $? "$(journalctl -u "$WG_UNIT" -n 20 --no-pager -o cat 2>&1)"
+
+# The assumption deviceFor() encodes, checked against the kernel rather than
+# against wg-quick's documentation.
+ip link show "$WG_PROFILE" >/dev/null 2>&1
+check "wg-quick named the interface after the profile, as deviceFor() assumes" $?
+
+# And the reason that seam has to exist: prefix discovery cannot find this
+# device, so without deviceFor() the widget would have no device at all.
+WG_DISCOVERED="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  const before = JSON.parse(process.argv[1]).map(l => l.ifname)
+  const after = JSON.parse(process.argv[2]).map(l => l.ifname)
+  console.log(M.newDevice(before, after, []))
+' "$WG_DEVICES_BEFORE" "$(ip -j link)")"
+[[ -z $WG_DISCOVERED ]]
+check "prefix discovery finds nothing, so the seam is load-bearing" $? \
+  "newDevice() returned '$WG_DISCOVERED'"
+
+# ---------------------------------------------------------- telemetry plane
+
+WG_RX1="$(cat "/sys/class/net/$WG_PROFILE/statistics/rx_bytes")"
+WG_TX1="$(cat "/sys/class/net/$WG_PROFILE/statistics/tx_bytes")"
+ping -c 3 -W 2 "$WG_SRV_IP" >/dev/null 2>&1
+check "traffic flows through the WireGuard tunnel" $? "$(wg show "$WG_PROFILE" 2>&1)"
+sleep 1
+WG_RX2="$(cat "/sys/class/net/$WG_PROFILE/statistics/rx_bytes")"
+WG_TX2="$(cat "/sys/class/net/$WG_PROFILE/statistics/tx_bytes")"
+
+[[ $WG_TX2 -gt $WG_TX1 && $WG_RX2 -gt $WG_RX1 ]]
+check "byte counters moved (rx $WG_RX1 -> $WG_RX2, tx $WG_TX1 -> $WG_TX2)" $?
+
+# The same unprivileged kernel telemetry as the other backend, running the
+# identical code — which is the claim the protocol-agnostic plane rests on.
+WG_PARSED="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  console.log(JSON.stringify(M.parseAddresses(process.argv[1], process.argv[2])))
+' "$(ip -j addr show "$WG_PROFILE")" "$WG_PROFILE")"
+echo "#   addresses parsed: $WG_PARSED"
+[[ $WG_PARSED == *"$WG_CLIENT_IP/24"* ]]
+check "Model.parseAddresses() reads a real WireGuard device" $? "got: $WG_PARSED"
+
+# It must NOT be the default route. If this ever reports true, the test has
+# taken over the host's traffic and the AllowedIPs above are wrong.
+WG_DEFAULT="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  console.log(String(M.defaultRouteVia(process.argv[1], process.argv[2])))
+' "$(ip -j route)" "$WG_PROFILE")"
+[[ $WG_DEFAULT == "false" ]]
+check "a split-tunnel profile is correctly not the default route" $? \
+  "defaultRouteVia said '$WG_DEFAULT'"
+
+# A profile that pushes no DNS must read as no resolvers, not as an error.
+WG_DNS="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  console.log(JSON.stringify(M.parseResolvers(process.argv[1], process.argv[2])))
+' "$(resolvectl status "$WG_PROFILE" 2>/dev/null || true)" "$WG_PROFILE")"
+echo "#   resolvers parsed: $WG_DNS"
+[[ $WG_DNS == "[]" ]]
+check "a profile with no DNS reports no resolvers rather than failing" $? "got: $WG_DNS"
+
+# Pins the Phase 2 decision to drop last-handshake age. If this ever starts
+# succeeding, the stat has become available and the decision can be revisited.
+if [[ -n ${SUDO_USER-} ]]; then
+  sudo -u "$SUDO_USER" wg show "$WG_PROFILE" >/dev/null 2>&1
+  check "wg show still needs root, so handshake age stays unavailable" \
+    $(( $? != 0 ? 0 : 1 ))
+else
+  echo "ok - SKIP: no SUDO_USER, cannot test wg show unprivileged"
+  pass=$((pass + 1))
+fi
+
+# ---------------------------------------------------------------- teardown
+
+systemctl stop "$WG_UNIT"
+check "systemctl stop returned success" $?
+sleep 1
+
+ip link show "$WG_PROFILE" >/dev/null 2>&1
+check "the WireGuard device is gone" $(( $? == 1 ? 0 : 1 ))
+
+"$ROOT/bin/install-profile" remove wireguard "$WG_PROFILE" >/dev/null
+check "the WireGuard profile was removed" $?
+
+test -f "/etc/wireguard/$WG_PROFILE.conf"
+check "no WireGuard config is left behind" $(( $? == 1 ? 0 : 1 ))
+
+fi
 
 echo "1..$((pass + fail))"
 echo "# pass $pass  fail $fail"

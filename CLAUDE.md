@@ -231,6 +231,18 @@ root — but it is the fastest way to isolate anything below that line, and it i
 how the kill-switch rules in Phase 4 should be developed so the host's nftables
 ruleset is never touched.
 
+Two refinements found while building the WireGuard harness section:
+
+- **`/sys` inside the namespace is still the host's.** `/sys/class/net` shows
+  the host's interfaces, so a byte-counter read finds nothing. `mount -t sysfs
+  none /sys` (with `--mount`) fixes it.
+- **A second namespace, for the far end, needs `/run` to be writable.**
+  `ip netns add` writes to `/run/netns`, which is real root's tmpfs and refuses
+  a mapped root. `mount -t tmpfs none /run` first. Then a WireGuard interface
+  can be created in the outer namespace and moved in with `ip link set <dev>
+  netns <ns>` — its UDP socket stays behind, which is what makes the two ends
+  reachable over loopback.
+
 Still needs a human: visual polish, the polkit prompt appearing from the QML
 plugin, and a real-world connection as a final sanity check.
 
