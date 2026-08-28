@@ -239,9 +239,38 @@ t.test("does not warn about a hook outside /home", () => {
   t.eq(p.warnings, [])
 })
 
-t.test("warns when credentials would need a terminal", () => {
+// `auth-user-pass` with no argument means "prompt on the terminal". The
+// service has no terminal, so the tunnel starts and hangs — which used to be
+// only a warning. It is now pointed at the credential file the privileged
+// helper writes, and the plan says so.
+t.test("an interactive auth-user-pass is pointed at the credential file", () => {
   const p = C.plan("client\nremote a 1\nauth-user-pass\n", { name: "w", sourceDir: "/t" })
-  t.ok(p.warnings.join(" ").indexOf("terminal") !== -1, p.warnings.join(" "))
+  t.eq(p.needsCredentials, true)
+  t.ok(p.content.indexOf("auth-user-pass w.auth") !== -1, p.content)
+  t.ok(p.content.indexOf("\nauth-user-pass\n") === -1, "the bare directive is gone")
+})
+
+// The filename has to match `credential_ext()` in bin/install-profile: this
+// file writes the reference, that one writes the file, and a disagreement
+// produces a profile that fails at connect time with a missing-file error.
+t.test("the credential reference is a bare filename", () => {
+  const p = C.plan("client\nremote a 1\nauth-user-pass\n", { name: "my.vpn-1", sourceDir: "/t" })
+  t.ok(p.content.indexOf("auth-user-pass my.vpn-1.auth") !== -1, p.content)
+  t.ok(p.content.indexOf("auth-user-pass /") === -1, "no absolute path")
+})
+
+// A profile that already carries its own credential file is not asking for
+// anything: the file is staged and installed beside the config like any other
+// asset, and offering to collect a username would be wrong.
+t.test("an auth-user-pass with a file needs nothing collected", () => {
+  const p = C.plan("client\nremote a 1\nauth-user-pass creds.txt\n", { name: "w", sourceDir: "/t" })
+  t.eq(p.needsCredentials, false)
+  t.eq(p.assets.length, 1)
+})
+
+t.test("a profile that never mentions credentials needs none", () => {
+  const p = C.plan("client\nremote a 1\n", { name: "w", sourceDir: "/t" })
+  t.eq(p.needsCredentials, false)
 })
 
 t.test("a file directive satisfied inline takes no asset", () => {

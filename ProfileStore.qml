@@ -19,7 +19,8 @@ import Quickshell.Io
 Item {
   id: root
 
-  // { name, protocol, endpoint, importedAt, requires }
+  // { name, protocol, endpoint, importedAt, requires, needsCredentials,
+  //   hasCredentials }
   //
   // `requires` is a list of COMMAND NAMES the profile needs at connect time
   // beyond its backend. Recorded here rather than reported once at import
@@ -31,6 +32,10 @@ Item {
   // them reaches profiles that were imported before the correction — the first
   // version of this stored the sentence and named the wrong package, which
   // then survived the fix.
+  // `needsCredentials` and `hasCredentials` are here for the same reason
+  // `requires` is: neither can be read back off the disk. The config that
+  // states the first and the credential file that would prove the second both
+  // live in a directory an unprivileged process cannot even traverse.
   property var profiles: []
   property bool loaded: false
 
@@ -74,8 +79,42 @@ Item {
       protocol: String(entry.protocol),
       endpoint: String(entry.endpoint || ""),
       importedAt: entry.importedAt || Math.floor(Date.now() / 1000),
-      requires: _cleanRequires(entry.requires)
+      requires: _cleanRequires(entry.requires),
+      needsCredentials: entry.needsCredentials === true,
+      // A fresh import never carries credentials: the config is installed
+      // first and the helper is asked for them afterwards, as a second
+      // authorization. Re-importing over an existing profile is a deliberate
+      // reset — the new config may not be for the same account.
+      hasCredentials: false
     })
+    profiles = next
+    save()
+  }
+
+  // Records that the helper stored or cleared this profile's credentials.
+  // Presence only — the secret itself never comes back out of the helper and
+  // is never held here.
+  function markCredentials(protocol, name, present) {
+    var next = []
+    var changed = false
+    for (var i = 0; i < profiles.length; i++) {
+      var entry = profiles[i]
+      if (entry.protocol !== protocol || entry.name !== name) {
+        next.push(entry)
+        continue
+      }
+      changed = true
+      next.push({
+        name: entry.name,
+        protocol: entry.protocol,
+        endpoint: entry.endpoint,
+        importedAt: entry.importedAt,
+        requires: entry.requires,
+        needsCredentials: entry.needsCredentials,
+        hasCredentials: present === true
+      })
+    }
+    if (!changed) return
     profiles = next
     save()
   }
@@ -109,7 +148,13 @@ Item {
         // A privileged listing returns names and nothing else, so a profile
         // this widget did not import has no known requirements. Absence here
         // means "not known to need anything", never "known to need nothing".
-        requires: known ? known.requires : []
+        requires: known ? known.requires : [],
+        // A privileged listing returns names, so a profile this widget did not
+        // import is not known to need credentials — and offering to store some
+        // for a profile whose config never asks for them would install a file
+        // the daemon then ignores.
+        needsCredentials: known ? known.needsCredentials : false,
+        hasCredentials: known ? known.hasCredentials : false
       })
     }
     profiles = next
@@ -150,7 +195,9 @@ Item {
         protocol: String(entry.protocol),
         endpoint: String(entry.endpoint || ""),
         importedAt: entry.importedAt || 0,
-        requires: _cleanRequires(entry.requires)
+        requires: _cleanRequires(entry.requires),
+        needsCredentials: entry.needsCredentials === true,
+        hasCredentials: entry.hasCredentials === true
       })
     }
 

@@ -92,6 +92,12 @@ Item {
   // Import state machine.
   property string _installProtocol: ""
 
+  // Cleared in credentialProcess.onStarted, as soon as it has been written.
+  property string _credentialPayload: ""
+  property string _credentialProtocol: ""
+  property string _credentialName: ""
+  property bool _credentialPresent: false
+
   property string _importProtocol: ""
   property string _importPath: ""
   property string _importName: ""
@@ -202,6 +208,8 @@ Item {
         unit: unit,
         endpoint: entry.endpoint,
         requires: entry.requires,
+        needsCredentials: entry.needsCredentials,
+        hasCredentials: entry.hasCredentials,
         state: existing ? existing.state : "down",
         device: existing ? existing.device : ""
       }))
@@ -748,6 +756,79 @@ Item {
     _importStaging = ""
   }
 
+  // ------------------------------------------------------- credentials
+  //
+  // Stored in a root-owned 0600 file beside the profile, because the realistic
+  // attacker is a process running as the user: the session keyring auto-unlocks
+  // at login and hands secrets to anything asking, while the profile directory
+  // is not readable by an unprivileged process at all. The reasoning, and the
+  // residual risk (an unencrypted backup of /etc), is in PLAN.md and the README.
+  //
+  // The password never becomes a command-line argument, and it is held here
+  // only for the moment between asking the process to start and its stdin
+  // existing to be written to — Quickshell's Process has no way to hand a
+  // payload to a launch, so `onStarted` is where it goes, and _credentialPayload
+  // is cleared there. It is never in stateJson, never in a command array, and
+  // never persisted.
+
+  function supportsCredentials(protocol) {
+    var backend = backendFor(protocol)
+    return !!backend && backend.supportsCredentials === true
+  }
+
+  function credentialLabels(protocol) {
+    var backend = backendFor(protocol)
+    return backend && backend.credentialLabels ? backend.credentialLabels : null
+  }
+
+  function setCredentials(tunnel, username, password) {
+    if (!tunnel || credentialProcess.running) return
+    if (!supportsCredentials(tunnel.protocol)) return
+    if (String(username || "") === "") {
+      lastError = "A username is required."
+      return
+    }
+
+    _credentialProtocol = tunnel.protocol
+    _credentialName = tunnel.name
+    _credentialPresent = true
+    actionStatus = "Saving credentials for " + tunnel.name + " — authorize to continue…"
+    lastError = ""
+
+    // The secret is NOT in this array. /proc/<pid>/cmdline is world-readable,
+    // so an argument would be disclosed to every process on the machine for as
+    // long as pkexec runs, whatever the file it lands in is chmodded to.
+    credentialProcess.command = [
+      "pkexec", pluginDir + "/bin/install-profile",
+      "set-credentials", tunnel.protocol, tunnel.name
+    ]
+    // Two lines, exactly what the helper's two `read -r` calls consume.
+    _credentialPayload = String(username) + "\n" + String(password || "") + "\n"
+    // Re-arm before every run: `stdinEnabled = false` is what sends EOF and it
+    // only sends it on a CHANGE, so the second save of a session would write
+    // its two lines and then hang on the helper's `read`. Same trap as import.
+    credentialProcess.stdinEnabled = true
+    credentialProcess.running = true
+  }
+
+  function clearCredentials(tunnel) {
+    if (!tunnel || credentialProcess.running) return
+    if (!supportsCredentials(tunnel.protocol)) return
+
+    _credentialProtocol = tunnel.protocol
+    _credentialName = tunnel.name
+    _credentialPresent = false
+    actionStatus = "Removing credentials for " + tunnel.name + " — authorize to continue…"
+    lastError = ""
+    credentialProcess.command = [
+      "pkexec", pluginDir + "/bin/install-profile",
+      "clear-credentials", tunnel.protocol, tunnel.name
+    ]
+    _credentialPayload = ""
+    credentialProcess.stdinEnabled = true
+    credentialProcess.running = true
+  }
+
   function deleteTunnel(tunnel) {
     if (!tunnel || removeProcess.running) return
     actionStatus = "Deleting " + tunnel.name + " — authorize to continue…"
@@ -806,7 +887,11 @@ Item {
         defaultRoute: telem.defaultRoute,
         dns: telem.dns,
         addresses: telem.addresses,
-        requires: tunnel.requires
+        requires: tunnel.requires,
+        // Presence only. The secret is never in this plugin's state, which is
+        // exactly why this is asserted on rather than the file being read.
+        needsCredentials: tunnel.needsCredentials,
+        hasCredentials: tunnel.hasCredentials
       })
     }
     for (var key in missingDeps) out.missingDeps[key] = missingDeps[key]
@@ -1110,6 +1195,36 @@ Item {
     }
   }
 
+  // Both credential verbs, because they are mutually exclusive by nature and a
+  // single in-flight guard is easier to reason about than two.
+  Process {
+    id: credentialProcess
+    running: false
+    command: []
+    stdinEnabled: true
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { id: credentialErr; waitForEnd: true }
+    onStarted: {
+      // Empty for clear-credentials, which reads nothing — the EOF still has
+      // to be sent, or a helper that grew a read one day would hang here.
+      write(root._credentialPayload)
+      root._credentialPayload = ""
+      stdinEnabled = false
+    }
+    onExited: function(exitCode) {
+      root.actionStatus = ""
+      if (exitCode === 0) {
+        store.markCredentials(root._credentialProtocol, root._credentialName,
+                              root._credentialPresent)
+      } else {
+        var text = Model.cleanError(String(credentialErr.text || ""))
+        root.lastError = text !== "" ? text : "Authorization was declined."
+      }
+      root._credentialProtocol = ""
+      root._credentialName = ""
+    }
+  }
+
   Process {
     id: installProfileProcess
     running: false
@@ -1125,7 +1240,10 @@ Item {
           endpoint: root._importPlan ? root._importPlan.endpoint : "",
           // Kept with the profile, not reported once and forgotten: the
           // profile stays broken until the package arrives.
-          requires: root._importPlan ? root._importPlan.requiredCommands : []
+          requires: root._importPlan ? root._importPlan.requiredCommands : [],
+          // Whether the profile asks for a username and password. The backend
+          // decides that from the config; nothing here reads one.
+          needsCredentials: !!root._importPlan && root._importPlan.needsCredentials === true
         })
       } else {
         var text = Model.cleanError(String(installErr.text || ""))

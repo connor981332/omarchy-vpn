@@ -187,6 +187,71 @@ else
   check "every advertised requirement names a package" 1 "$missing_pkg"
 fi
 
+echo "# a secret never reaches an argument list or the state surface"
+# /proc/<pid>/cmdline is world-readable, so a password passed as an argument is
+# disclosed to every process on the machine for as long as pkexec runs — the
+# 0600 file it ends up in does not undo that. The credential command array must
+# therefore end at the profile name.
+cred_arrays="$(awk '/credentialProcess.command = \[/,/^ *\]/' Service.qml)"
+if [[ -z $cred_arrays ]]; then
+  check "the credential command array carries no secret" 1 "no credential command array found"
+elif grep -qE 'password|_credentialPayload' <<< "$cred_arrays"; then
+  check "the credential command array carries no secret" 1 "$cred_arrays"
+else
+  check "the credential command array carries no secret" 0
+fi
+
+# The payload is held only between asking the process to start and its stdin
+# existing. If onStarted stops clearing it, the password stays in a QML
+# property for the rest of the session.
+if grep -A6 'onStarted:' Service.qml | grep -q '_credentialPayload = ""'; then
+  check "the credential payload is cleared as soon as it is written" 0
+else
+  check "the credential payload is cleared as soon as it is written" 1 \
+    "$(grep -n '_credentialPayload' Service.qml)"
+fi
+
+# stateJson() is a public IPC surface — `omarchy-shell connor.vpn state` prints
+# it, and the tests read it. It may report that credentials exist and never
+# what they are.
+state_body="$(awk '/^  function stateJson\(\)/,/^  }$/' Service.qml)"
+if [[ -z $state_body ]]; then
+  check "the IPC state surface exposes presence, not secrets" 1 "stateJson() not found"
+elif grep -qE 'password|_credentialPayload' <<< "$state_body"; then
+  check "the IPC state surface exposes presence, not secrets" 1 \
+    "$(grep -nE 'password|_credentialPayload' <<< "$state_body")"
+else
+  check "the IPC state surface exposes presence, not secrets" 0
+fi
+
+# Same rule for the panel: the form may hold what is being typed, but nothing
+# may persist it. A settings write would put it in shell.json in plaintext.
+if grep -nE 'persistSettings\(.*password|password.*persistSettings' Panel.qml >/dev/null; then
+  check "the panel never persists a credential" 1 "$(grep -n 'persistSettings' Panel.qml)"
+else
+  check "the panel never persists a credential" 0
+fi
+
+# The credential UI is gated on a backend property, not on a protocol name —
+# the same rule as everything else in the panel.
+if grep -q 'supportsCredentials' Panel.qml && grep -q 'supportsCredentials' backends/wireguard/Backend.qml; then
+  check "the credential offer is gated on a backend property" 0
+else
+  check "the credential offer is gated on a backend property" 1 \
+    "Panel.qml or a backend does not declare supportsCredentials"
+fi
+
+# The config writes `<name>.auth`; the helper writes the file. A disagreement
+# produces a profile that installs cleanly and fails at connect time.
+cfg_ext="$(grep -oE 'var CREDENTIAL_EXT = "[a-z]+"' backends/openvpn/Config.js | grep -oE '"[a-z]+"' | tr -d '"')"
+helper_ext="$(grep -A2 'credential_ext()' bin/install-profile | grep -oE 'echo "[a-z]+"' | grep -oE '"[a-z]+"' | tr -d '"')"
+if [[ -n $cfg_ext && $cfg_ext == "$helper_ext" ]]; then
+  check "the config and the helper agree on the credential filename" 0
+else
+  check "the config and the helper agree on the credential filename" 1 \
+    "Config.js says '${cfg_ext:-<none>}', install-profile says '${helper_ext:-<none>}'"
+fi
+
 echo "# no symlinks — plugin validation rejects them"
 links="$(find . -type l -not -path './.git/*' 2>/dev/null || true)"
 if [[ -z $links ]]; then

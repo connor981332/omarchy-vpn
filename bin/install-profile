@@ -22,6 +22,14 @@
 #   install-profile install <protocol> <name> <staging-dir>
 #   install-profile remove  <protocol> <name>
 #   install-profile list    <protocol>
+#   install-profile set-credentials   <protocol> <name>   # reads stdin
+#   install-profile clear-credentials <protocol> <name>
+#
+# `set-credentials` takes the username and password as the first two lines of
+# STDIN and never as arguments. /proc/<pid>/cmdline is world-readable, so an
+# argument is visible to every process on the machine for as long as this one
+# runs — a secret passed that way is disclosed no matter what the file it ends
+# up in is chmodded to.
 
 set -euo pipefail
 
@@ -52,6 +60,29 @@ profile_owner() {
 
 profile_ext() {
   echo "conf"
+}
+
+# Credentials live beside the profile as `<name>.auth`, which is the format
+# OpenVPN's own `auth-user-pass <file>` expects: username on line one,
+# password on line two, nothing else. No invented encoding to audit, and the
+# file is picked up by a reconnect with no session and no UI.
+#
+# `<name>.auth` also sorts under the `$name.*` glob that cmd_remove already
+# walks, so deleting a profile deletes its credentials without a second rule
+# that could drift out of step with this one.
+credential_ext() {
+  echo "auth"
+}
+
+# Which protocols have a credential file at all. WireGuard authenticates with
+# keys that are already in the config, so there is nothing to store and a
+# request to store some is a caller bug worth refusing loudly.
+profile_has_credentials() {
+  case "$1" in
+    openvpn) return 0 ;;
+    wireguard) return 1 ;;
+    *) die "unknown protocol '$1'" ;;
+  esac
 }
 
 # A profile name becomes a filename and a systemd instance. Anything outside
@@ -137,6 +168,61 @@ cmd_remove() {
   echo "removed $name ($removed files)"
 }
 
+# Reads the two values from stdin, never from argv. Both are read with
+# `read -r`, so neither can contain a newline and the two-line file cannot be
+# forged into more lines than it claims to have.
+cmd_set_credentials() {
+  local protocol="${1-}" name="${2-}"
+  [[ -n $protocol && -n $name ]] || die "usage: set-credentials <protocol> <name>"
+  validate_name "$name"
+  profile_has_credentials "$protocol" || die "$protocol profiles do not use stored credentials"
+
+  local dir owner
+  dir="$(profile_dir "$protocol")"
+  owner="$(profile_owner "$protocol")"
+  [[ -d $dir ]] || die "$dir does not exist"
+
+  # Refuse to write credentials for a profile that is not installed: the file
+  # would be invisible to the widget (it cannot list this directory) and would
+  # outlive anything that knows why it is there.
+  [[ -f "$dir/$name.$(profile_ext "$protocol")" ]] \
+    || die "no profile named '$name' in $dir"
+
+  local username password
+  IFS= read -r username || username=""
+  IFS= read -r password || password=""
+  [[ -n $username ]] || die "empty username"
+
+  # Written to a private temp file and installed over, so the destination is
+  # never briefly readable and a failure part-way through leaves the previous
+  # credentials intact rather than a half-written file.
+  local tmp
+  tmp="$(mktemp)"
+  # shellcheck disable=SC2064  # $tmp is expanded now on purpose.
+  trap "rm -f -- '$tmp'" EXIT
+  chmod 0600 "$tmp"
+  printf '%s\n%s\n' "$username" "$password" > "$tmp"
+  install -o "${owner%%:*}" -g "${owner##*:}" -m 0600 "$tmp" \
+    "$dir/$name.$(credential_ext)"
+
+  echo "stored credentials for $name"
+}
+
+cmd_clear_credentials() {
+  local protocol="${1-}" name="${2-}"
+  [[ -n $protocol && -n $name ]] || die "usage: clear-credentials <protocol> <name>"
+  validate_name "$name"
+  profile_has_credentials "$protocol" || die "$protocol profiles do not use stored credentials"
+
+  local dir file
+  dir="$(profile_dir "$protocol")"
+  file="$dir/$name.$(credential_ext)"
+  [[ -f $file && ! -L $file ]] || die "no stored credentials for '$name'"
+  rm -f -- "$file"
+
+  echo "cleared credentials for $name"
+}
+
 cmd_list() {
   local protocol="${1-}"
   [[ -n $protocol ]] || die "usage: list <protocol>"
@@ -176,5 +262,7 @@ case "$verb" in
   install) cmd_install "$@" ;;
   remove) cmd_remove "$@" ;;
   list) cmd_list "$@" ;;
-  *) die "usage: install-profile {install|remove|list} ..." ;;
+  set-credentials) cmd_set_credentials "$@" ;;
+  clear-credentials) cmd_clear_credentials "$@" ;;
+  *) die "usage: install-profile {install|remove|list|set-credentials|clear-credentials} ..." ;;
 esac

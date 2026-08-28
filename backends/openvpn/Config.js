@@ -14,6 +14,10 @@
 // Directives whose first argument names a file. The number is how many
 // arguments follow the filename and must be preserved — `tls-auth ta.key 1`
 // carries a key direction, everything else carries nothing.
+// Matches `credential_ext()` in bin/install-profile. The two have to agree:
+// this file writes the reference into the config, that one writes the file.
+var CREDENTIAL_EXT = "auth"
+
 var FILE_DIRECTIVES = {
   "ca": 0,
   "cert": 0,
@@ -205,6 +209,7 @@ function plan(text, options) {
   // this file is pure, so it cannot look. See stage-profile's --hook.
   var hookTargets = []
   var seen = {}
+  var needsCredentials = false
 
   var out = []
   for (var i = 0; i < parsed.lines.length; i++) {
@@ -235,10 +240,16 @@ function plan(text, options) {
     // The directive can also be satisfied inline (<ca>…</ca>), in which case
     // it takes no argument and there is nothing to copy.
     if (line.args.length === 0) {
+      // `auth-user-pass` with no argument means "prompt on the terminal", and
+      // the service has no terminal — so the tunnel would start and hang.
+      // Point it at the credential file the privileged helper writes, and tell
+      // the caller the profile is not usable until that file exists. The name
+      // must match the helper's `<name>.auth`; it is a bare filename because
+      // the unit's WorkingDirectory is the profile directory.
       if (line.key === "auth-user-pass") {
-        warnings.push("`auth-user-pass` has no file, so OpenVPN would prompt for a username "
-          + "and password on a terminal the service does not have. The tunnel will not start "
-          + "until you add a credentials file.")
+        needsCredentials = true
+        out.push("auth-user-pass " + name + "." + CREDENTIAL_EXT)
+        continue
       }
       out.push(line.raw)
       continue
@@ -259,6 +270,10 @@ function plan(text, options) {
     content: out.join("\n").replace(/\n+$/, "") + "\n",
     assets: assets,
     hookTargets: hookTargets,
+    // True when the profile asks for a username and password interactively.
+    // The caller has to collect them and hand them to the helper; until then
+    // the profile is installed and will not start.
+    needsCredentials: needsCredentials,
     warnings: warnings,
     errors: errors
   }

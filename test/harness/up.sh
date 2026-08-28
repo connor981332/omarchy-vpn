@@ -25,6 +25,10 @@ PROFILE="harness-test"
 # A second profile, identical but for a hook that is not installed. It exists
 # to prove the panel reports the daemon's reason and not systemd's boilerplate.
 BAD_PROFILE="harness-badhook"
+# A third, whose config asks for a username and password. It connects to a
+# second server that actually checks them, so both the accept and the reject
+# path are real rather than simulated.
+AUTH_PROFILE="harness-auth"
 # The WireGuard end. 10 characters, comfortably inside the 15 wg-quick allows,
 # and the interface it creates takes this name exactly — which is the whole
 # point of the deviceFor() seam.
@@ -108,6 +112,10 @@ cleanup() {
   "$ROOT/bin/install-profile" remove openvpn "$PROFILE" >/dev/null 2>&1 || true
   systemctl stop "openvpn-client@${BAD_PROFILE}.service" >/dev/null 2>&1 || true
   "$ROOT/bin/install-profile" remove openvpn "$BAD_PROFILE" >/dev/null 2>&1 || true
+  systemctl stop "openvpn-client@${AUTH_PROFILE}.service" >/dev/null 2>&1 || true
+  # Removes the profile AND its credential file, which is the behaviour the
+  # section asserts — so a failed run leaves no secret behind either.
+  "$ROOT/bin/install-profile" remove openvpn "$AUTH_PROFILE" >/dev/null 2>&1 || true
   systemctl stop "$WG_UNIT" >/dev/null 2>&1 || true
   "$ROOT/bin/install-profile" remove wireguard "$WG_PROFILE" >/dev/null 2>&1 || true
   ip netns exec "$NS" ip link del "$WG_SRV_DEV" >/dev/null 2>&1 || true
@@ -431,6 +439,204 @@ check "and not systemd's job-failed boilerplate" $? "got: $PANEL_SAYS"
 
 "$ROOT/bin/install-profile" remove openvpn "$BAD_PROFILE" >/dev/null
 check "the broken profile was removed" $?
+
+# ------------------------------------------------------------ credentials
+
+# Phase 3. A profile with `auth-user-pass` and no file is the shape almost
+# every commercial provider ships, and it used to be refused at import: the
+# directive means "prompt on the terminal" and the service has no terminal.
+#
+# This section runs the whole loop against a real server that actually checks
+# the username and password, because the two halves that matter cannot be
+# tested apart. A file with the right mode proves nothing if OpenVPN never
+# reads it, and an AUTH_FAILED in the journal proves nothing if the panel
+# still shows systemd's boilerplate over the top of it.
+echo "# credentials"
+
+AUTH_UNIT="openvpn-client@${AUTH_PROFILE}.service"
+AUTH_FILE="/etc/openvpn/client/${AUTH_PROFILE}.auth"
+AUTH_USER="harness-user"
+AUTH_PASS="harness-pass"
+AUTH_PORT="1195"
+
+# A second server rather than a change to the first: the existing one is green
+# and every assertion above depends on it, so the credential test must not be
+# able to break it.
+cat > "$WORK/verify.sh" <<'VERIFY'
+#!/bin/bash
+# OpenVPN writes the two lines to a temp file and passes its path. Exit 0
+# accepts the client.
+[[ "$(sed -n 1p "$1")" == "harness-user" && "$(sed -n 2p "$1")" == "harness-pass" ]]
+VERIFY
+chmod 0755 "$WORK/verify.sh"
+
+sed -e "s/^port 1194\$/port $AUTH_PORT/" \
+    -e "s#^server 10\.88\.0\.0#server 10.88.2.0#" \
+    "$WORK/server.conf" > "$WORK/server-auth.conf"
+{
+  echo "script-security 2"
+  echo "auth-user-pass-verify $WORK/verify.sh via-file"
+} >> "$WORK/server-auth.conf"
+
+ip netns exec "$NS" openvpn --config "$WORK/server-auth.conf" --cd "$WORK" \
+  --log "$WORK/server-auth.log" --daemon
+sleep 3
+
+AUTH_SERVER_PID="$(pgrep -f "openvpn --config $WORK/server-auth.conf" | head -1 || true)"
+[[ -n $AUTH_SERVER_PID ]]
+check "a server that checks a username and password is running" $? \
+  "$(tail -20 "$WORK/server-auth.log" 2>/dev/null || echo '(no log was written)')"
+
+if [[ -n $AUTH_SERVER_PID ]]; then
+
+# The client profile: the generated one, pointed at the second server, with a
+# bare `auth-user-pass` added. That directive is the whole subject of the test.
+sed -e "s/ $SERVER_IP 1194\$/ $SERVER_IP $AUTH_PORT/" "$WORK/client.ovpn" \
+  > "$WORK/client-auth.ovpn"
+echo "auth-user-pass" >> "$WORK/client-auth.ovpn"
+
+AUTH_PLAN_JSON="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const C = load("backends/openvpn/Config.js")
+  const fs = require("fs")
+  const src = process.argv[1]
+  const plan = C.plan(fs.readFileSync(src, "utf8"),
+                      { name: process.argv[2], sourceDir: src.replace(/\/[^/]+$/, "") })
+  fs.writeFileSync(process.argv[3], plan.content)
+  console.log(JSON.stringify({ assets: plan.assets, needsCredentials: plan.needsCredentials }))
+' "$WORK/client-auth.ovpn" "$AUTH_PROFILE" "$WORK/auth-base.conf")"
+
+echo "$AUTH_PLAN_JSON" | grep -q '"needsCredentials":true'
+check "import notices the profile will need a username and password" $? "$AUTH_PLAN_JSON"
+
+# The filename the config now points at has to be the one the helper writes.
+# This is the seam the architecture test can only check by string comparison;
+# here both ends are real.
+grep -q "^auth-user-pass ${AUTH_PROFILE}.auth\$" "$WORK/auth-base.conf"
+check "the rewritten config points at the credential file the helper writes" $? \
+  "$(grep -n auth-user-pass "$WORK/auth-base.conf")"
+
+AUTH_STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/$AUTH_PROFILE"
+AUTH_STAGE_ARGS=()
+while IFS=$'\t' read -r source target; do
+  [[ -n $source ]] && AUTH_STAGE_ARGS+=(--asset "$source" "$target")
+done < <(echo "$AUTH_PLAN_JSON" | "$NODE" -e '
+  let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+    JSON.parse(s).assets.forEach(a => console.log(a.source + "\t" + a.target))
+  })')
+
+"$ROOT/bin/stage-profile" "$AUTH_STAGING" "$AUTH_PROFILE.conf" "${AUTH_STAGE_ARGS[@]}" \
+  < "$WORK/auth-base.conf" >/dev/null
+check "staged the credential profile" $?
+
+"$ROOT/bin/install-profile" install openvpn "$AUTH_PROFILE" "$AUTH_STAGING" >/dev/null
+check "installed the credential profile" $?
+
+# Starting before any credentials exist. The config names a file that is not
+# there, which is the state every such profile sits in between import and the
+# first save — so it must say so in words rather than quoting a path.
+systemctl start "$AUTH_UNIT" >/dev/null 2>&1
+check "a profile with no saved credentials will not start" $(( $? != 0 ? 0 : 1 ))
+
+journalctl -u "$AUTH_UNIT" -n 40 --no-pager -o cat > "$WORK/journal-nocreds.txt" 2>&1
+NOCREDS_SAYS="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  const fs = require("fs")
+  console.log(M.journalError(fs.readFileSync(process.argv[1], "utf8")))
+' "$WORK/journal-nocreds.txt")"
+echo "# the panel says: $NOCREDS_SAYS"
+[[ $NOCREDS_SAYS == *"have not been saved yet"* ]]
+check "the panel explains that credentials are missing" $? \
+  "got: $NOCREDS_SAYS"$'\n'"journal:"$'\n'"$(cat "$WORK/journal-nocreds.txt")"
+
+# The secret goes in on stdin, exactly as Service.qml sends it.
+printf '%s\n%s\n' "$AUTH_USER" "wrong-password" \
+  | "$ROOT/bin/install-profile" set-credentials openvpn "$AUTH_PROFILE" >/dev/null
+check "the helper stored credentials read from stdin" $?
+
+AUTH_STAT="$(stat -c '%U:%G:%a' "$AUTH_FILE" 2>/dev/null || echo missing)"
+[[ $AUTH_STAT == "openvpn:network:600" ]]
+check "the credential file is 0600 and owned like the profile (got '$AUTH_STAT')" $?
+
+# Two lines and nothing else — OpenVPN's own format, so there is no encoding
+# to audit and no parser of ours between the file and the daemon.
+[[ "$(wc -l < "$AUTH_FILE")" == "2" ]]
+check "the credential file is exactly two lines" $? "$(wc -l < "$AUTH_FILE")"
+
+# Unprivileged readability is the entire security argument for choosing this
+# over the session keyring, so it is asserted rather than assumed.
+if [[ -n ${SUDO_USER-} ]]; then
+  sudo -u "$SUDO_USER" cat "$AUTH_FILE" >/dev/null 2>&1
+  check "the credential file is unreadable by the user's own processes" \
+    $(( $? != 0 ? 0 : 1 ))
+else
+  echo "ok - SKIP: no SUDO_USER, cannot test unprivileged readability"
+  pass=$((pass + 1))
+fi
+
+# A wrong password, through a server that actually checks it.
+systemctl start "$AUTH_UNIT" >/dev/null 2>&1
+check "a wrong password does not connect" $(( $? != 0 ? 0 : 1 ))
+
+journalctl -u "$AUTH_UNIT" -n 40 --no-pager -o cat > "$WORK/journal-auth.txt" 2>&1
+AUTH_SAYS="$(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const M = load("Model.js")
+  const fs = require("fs")
+  console.log(M.journalError(fs.readFileSync(process.argv[1], "utf8")))
+' "$WORK/journal-auth.txt")"
+echo "# the panel says: $AUTH_SAYS"
+
+# The requirement in PLAN.md, verbatim: failed auth must surface as "wrong
+# username or password", not as a unit error. `AUTH: Received control message:
+# AUTH_FAILED` is the daemon's own words and they do not say that.
+[[ $AUTH_SAYS == *"rejected the username or password"* ]]
+check "the panel says the credentials were rejected, not that a job failed" $? \
+  "got: $AUTH_SAYS"$'\n'"journal:"$'\n'"$(cat "$WORK/journal-auth.txt")"
+
+# Correcting them must overwrite in place, not append or leave the old file.
+printf '%s\n%s\n' "$AUTH_USER" "$AUTH_PASS" \
+  | "$ROOT/bin/install-profile" set-credentials openvpn "$AUTH_PROFILE" >/dev/null
+check "credentials can be replaced" $?
+[[ "$(wc -l < "$AUTH_FILE")" == "2" ]]
+check "replacing them overwrites rather than appends" $? "$(wc -l < "$AUTH_FILE")"
+
+systemctl start "$AUTH_UNIT" >/dev/null 2>&1
+check "the right password connects" $? \
+  "$(journalctl -u "$AUTH_UNIT" -n 25 --no-pager -o cat 2>&1)"
+
+systemctl is-active --quiet "$AUTH_UNIT"
+check "the credential tunnel reached active" $?
+
+# "reconnects later without prompting again" — the file is on disk and the
+# daemon reads it itself, so a restart with no UI involved must work.
+systemctl restart "$AUTH_UNIT" >/dev/null 2>&1
+sleep 3
+systemctl is-active --quiet "$AUTH_UNIT"
+check "it reconnects from the stored file with nothing to prompt" $? \
+  "$(journalctl -u "$AUTH_UNIT" -n 25 --no-pager -o cat 2>&1)"
+
+systemctl stop "$AUTH_UNIT" >/dev/null 2>&1
+
+"$ROOT/bin/install-profile" clear-credentials openvpn "$AUTH_PROFILE" >/dev/null
+check "credentials can be cleared" $?
+test -f "$AUTH_FILE"
+check "clearing removes the file" $(( $? == 1 ? 0 : 1 ))
+
+# Deleting a profile must delete its credentials. It happens because the
+# credential file falls under the `$name.*` glob remove already walks — this is
+# the assertion that would notice if that stopped being true.
+printf '%s\n%s\n' "$AUTH_USER" "$AUTH_PASS" \
+  | "$ROOT/bin/install-profile" set-credentials openvpn "$AUTH_PROFILE" >/dev/null
+"$ROOT/bin/install-profile" remove openvpn "$AUTH_PROFILE" >/dev/null
+check "the credential profile was removed" $?
+test -f "$AUTH_FILE"
+check "deleting the profile deleted its credentials" $(( $? == 1 ? 0 : 1 ))
+
+kill "$AUTH_SERVER_PID" >/dev/null 2>&1 || true
+
+fi
 
 # ============================================================== WireGuard
 

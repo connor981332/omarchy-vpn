@@ -26,6 +26,11 @@ Panel {
   property int cursorIndex: 0
   property var pendingDelete: null
 
+  // The id of the profile whose credential form is open, or "". While one is
+  // open the TextFields own the keyboard — the panel's own j/k/x bindings would
+  // otherwise eat the letters being typed into a username.
+  property string credentialForm: ""
+
   readonly property var rows: vpn.sortedTunnels
   readonly property bool headerHasCursor: cursorActive && cursorIndex === -1
 
@@ -103,6 +108,10 @@ Panel {
     if (cursorIndex > rows.length - 1) cursorIndex = rows.length - 1
     if (cursorIndex < -1) cursorIndex = -1
   }
+
+  // Closing the panel abandons any half-typed credentials — see
+  // CredentialNote.onFormOpenChanged, which is what actually clears the fields.
+  onOpenedChanged: if (!opened) root.credentialForm = ""
 
   function open() {
     vpn.refresh()
@@ -186,6 +195,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // A credential form is a text field, and `x` inside it is a letter, not
+      // "delete this profile". Freeze the cursor model until it closes.
+      blocked: root.credentialForm !== ""
       // While the confirmation is up it owns every key. ConfirmDialog's own
       // handleKey() wants raw events, which this catcher has already turned
       // into intent — so the dialog is driven through the same signals as
@@ -482,6 +494,15 @@ Panel {
                     tunnel: tunnelItem.modelData
                   }
 
+                  // A profile whose config asks for a username and password.
+                  // Shown for as long as the profile is installed, because
+                  // "not started yet" and "credentials never saved" look
+                  // identical from the bar otherwise.
+                  CredentialNote {
+                    width: tunnelItem.width
+                    tunnel: tunnelItem.modelData
+                  }
+
                   // Anything the profile needs beyond its backend, shown under
                   // the row it belongs to and for as long as it is missing —
                   // not once at import, when the profile is about to be
@@ -655,6 +676,118 @@ Panel {
       Button {
         text: "Re-check"
         onClicked: vpn.recheckRequirement(note.command)
+      }
+    }
+  }
+
+  component CredentialNote: Column {
+    id: cred
+    property var tunnel: null
+
+    readonly property var labels: cred.tunnel
+      ? vpn.credentialLabels(cred.tunnel.protocol) : null
+    readonly property bool applies: !!cred.tunnel
+      && cred.tunnel.needsCredentials
+      && vpn.supportsCredentials(cred.tunnel.protocol)
+      && cred.labels !== null
+    readonly property bool formOpen: !!cred.tunnel && root.credentialForm === cred.tunnel.id
+    readonly property bool saved: !!cred.tunnel && cred.tunnel.hasCredentials
+
+    function submit() {
+      vpn.setCredentials(cred.tunnel, usernameField.text, passwordField.text)
+      cred.dismiss()
+    }
+
+    function dismiss() {
+      root.credentialForm = ""
+    }
+
+    // Clearing the fields is the point, not tidiness: the password would
+    // otherwise sit in a TextField's buffer for the rest of the session,
+    // reachable by reopening the form. Hung off the state rather than off
+    // dismiss(), so closing the panel clears them too.
+    onFormOpenChanged: if (!cred.formOpen) {
+      usernameField.text = ""
+      passwordField.text = ""
+    }
+
+    visible: cred.applies
+    spacing: Style.space(6)
+
+    Text {
+      width: cred.width
+      visible: !cred.formOpen
+      text: cred.saved
+        ? "🔒 " + (cred.labels ? cred.labels.title : "") + " saved."
+        : "⚠ " + (cred.labels ? cred.labels.explain : "")
+      color: cred.saved ? root.dim : root.urgent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+
+    Row {
+      visible: !cred.formOpen
+      spacing: Style.space(8)
+
+      Button {
+        text: cred.saved ? "Change" : "Enter credentials"
+        onClicked: {
+          root.credentialForm = cred.tunnel.id
+          Qt.callLater(usernameField.forceActiveFocus)
+        }
+      }
+
+      Button {
+        visible: cred.saved
+        text: "Remove"
+        onClicked: vpn.clearCredentials(cred.tunnel)
+      }
+    }
+
+    // The form. Two fields and two buttons, inline under the row rather than
+    // in a modal — the row is the thing the credentials belong to, and a modal
+    // would hide which profile is being edited.
+    Column {
+      visible: cred.formOpen
+      width: cred.width
+      spacing: Style.space(6)
+
+      TextField {
+        id: usernameField
+        width: parent.width
+        placeholderText: cred.labels ? cred.labels.username : ""
+        foreground: root.foreground
+        font.family: root.fontFamily
+        onAccepted: passwordField.forceActiveFocus()
+        Keys.onEscapePressed: cred.dismiss()
+      }
+
+      TextField {
+        id: passwordField
+        width: parent.width
+        password: true
+        placeholderText: cred.labels ? cred.labels.password : ""
+        foreground: root.foreground
+        font.family: root.fontFamily
+        onAccepted: cred.submit()
+        Keys.onEscapePressed: cred.dismiss()
+      }
+
+      Row {
+        spacing: Style.space(8)
+
+        Button {
+          text: "Save"
+          enabled: usernameField.text !== ""
+          opacity: enabled ? 1.0 : 0.5
+          onClicked: cred.submit()
+        }
+
+        Button {
+          text: "Cancel"
+          onClicked: cred.dismiss()
+        }
       }
     }
   }

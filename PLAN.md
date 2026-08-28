@@ -408,6 +408,70 @@ which the keyring cannot.
 **Done when:** a profile using `auth-user-pass` imports, prompts once, connects,
 and reconnects later without prompting again.
 
+### Status: built 2026-08-27, awaiting the Tier 2 run
+
+The design above is what shipped, with no reopened decisions.
+
+- **`bin/install-profile` gained `set-credentials` and `clear-credentials`.**
+  The username and password are the first two lines of stdin and there is no
+  positional slot for them, which is the rule the simple file format makes
+  easiest to break. Both are read with `read -r`, so neither can contain a
+  newline and the two-line file cannot be forged into more lines than it
+  claims. The file is written to a private temp file and `install`ed over the
+  destination, so it is never briefly readable and a failure part-way through
+  leaves the previous credentials rather than half of the new ones.
+- **Deleting a profile deletes its credentials for free.** `<name>.auth` falls
+  under the `$name.*` glob `cmd_remove` already walks — no second rule that
+  could drift out of step with the first. Asserted anyway, in both tiers.
+- **The bare `auth-user-pass` is rewritten, not warned about.** It used to
+  produce a warning and a profile that could never start; it now becomes
+  `auth-user-pass <name>.auth`, and the plan reports `needsCredentials` so the
+  panel can offer the two fields. The filename is agreed between
+  `Config.js` and the helper, and an architecture check compares the two
+  literals — a disagreement would install cleanly and fail at connect time.
+- **`supportsCredentials` is a backend property.** WireGuard sets it false and
+  the helper refuses the verb for that protocol as well, so a bug in the panel
+  cannot create a file `wg-quick` would ignore. Nothing outside `backends/`
+  names the directive.
+- **Failed auth is translated, not quoted.** `AUTH: Received control message:
+  AUTH_FAILED` is the server saying the password is wrong and nothing about
+  that sentence says so. It is the one failure the user can fix in the panel
+  they are already looking at, so `journalError()` restates it — along with
+  the missing-credential-file case, which is where every such profile sits
+  between import and the first save. Everything else is still passed through
+  verbatim: the daemon's own words beat a paraphrase, and a paraphrase that
+  guesses wrong sends the user after the wrong problem.
+
+**On the secret never reaching argv.** Four mechanical checks, because this is
+a property that is easy to lose in a later edit and impossible to notice by
+reading the UI: the credential command array carries no secret,
+`_credentialPayload` is cleared the moment it is written, `stateJson()` — a
+public IPC surface — reports presence and never a value, and the panel never
+routes a credential through `persistSettings()`. Each was verified to fail
+when deliberately broken.
+
+One thing the QML forced. `Process` has no way to hand a payload to a launch,
+so the two lines are held in a property between `running = true` and
+`onStarted`. That window is real and is documented where it happens; the
+alternative was writing the secret to a file for the helper to read, which is
+worse. The stdin re-arm trap from Phase 2 applies here too, and the second
+save of a session is exactly where it would have bitten.
+
+**Tier 2 grew a credentials section that stands up a second OpenVPN server**
+inside the same namespace, on its own port and subnet, with
+`auth-user-pass-verify` actually checking the values. A second server rather
+than a change to the first: every assertion above the section depends on the
+first one being green, so the credential test must not be able to break it.
+Nineteen assertions covering both halves of the loop — a wrong password is
+rejected by a real server and reported as rejected, the right one connects,
+and a `systemctl restart` reconnects from the file with nothing to prompt.
+The mode, ownership, line count and unprivileged unreadability of the file are
+asserted rather than assumed, because unreadability by the user's own
+processes *is* the security argument for choosing this over the keyring.
+
+**Still human:** entering credentials through the panel, and the polkit prompt
+that follows — the harness drives the helper directly and never touches QML.
+
 ---
 
 ## Phase 4 — Kill switch

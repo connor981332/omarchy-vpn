@@ -150,6 +150,15 @@ function makeTunnel(fields) {
     // instance of *this* context's Array. Duck-typed, with strings excluded
     // because they have a length too.
     requires: _asList(f.requires),
+    // Credentials, as two independent facts. "Needs" comes from the config at
+    // import; "has" is set when the helper reports it stored them. Neither can
+    // be re-derived later — the profile directory is unreadable to us — so
+    // both live in the index and are carried forward by updateTunnel().
+    //
+    // `hasCredentials` is presence, never the secret: nothing anywhere in this
+    // plugin outside the helper's stdin pipe holds a password.
+    needsCredentials: f.needsCredentials === true,
+    hasCredentials: f.hasCredentials === true,
     telemetry: f.telemetry || emptyTelemetry()
   }
 }
@@ -508,6 +517,15 @@ var _JOURNAL_NOISE = [
   /^event_wait /
 ]
 
+var _JOURNAL_TRANSLATIONS = [
+  [/AUTH_FAILED|auth-failure/i,
+   "The server rejected the username or password for this profile."],
+  // The credential file the config points at is not there, which is the state
+  // a profile sits in between import and the first time credentials are saved.
+  [/auth-user-pass.*(No such file or directory|Cannot open)/i,
+   "This profile needs a username and password, which have not been saved yet."]
+]
+
 // The lines that are the cause, in the order we would rather report them.
 // Authentication first: it is the one a user can act on immediately, and it is
 // usually followed by a cascade of lower-level errors that would otherwise win.
@@ -553,7 +571,7 @@ function journalError(text) {
   // fallout rather than the reason.
   for (var p = 0; p < _JOURNAL_STRONG.length; p++) {
     for (i = 0; i < lines.length; i++) {
-      if (_JOURNAL_STRONG[p].test(lines[i])) return cleanError(lines[i])
+      if (_JOURNAL_STRONG[p].test(lines[i])) return _translate(cleanError(lines[i]))
     }
   }
 
@@ -562,7 +580,20 @@ function journalError(text) {
   // follows it with advice or teardown. "Proximity to the death" sounds like
   // the better signal and is not — it picked `run \`resolvconf -u\` to update`
   // over the `signature mismatch` line that actually explained the failure.
-  return cleanError(lines[0])
+  return _translate(cleanError(lines[0]))
+}
+
+// A daemon line the user can act on, restated as the thing they should do.
+// Only for causes where the raw text is genuinely opaque — "AUTH: Received
+// control message: AUTH_FAILED" is the server saying the password is wrong,
+// and nothing about it says so. Everything unlisted is passed through: the
+// daemon's own words are almost always better than a paraphrase, and a
+// paraphrase that guesses wrong sends the user after the wrong problem.
+function _translate(message) {
+  for (var i = 0; i < _JOURNAL_TRANSLATIONS.length; i++) {
+    if (_JOURNAL_TRANSLATIONS[i][0].test(message)) return _JOURNAL_TRANSLATIONS[i][1]
+  }
+  return message
 }
 
 // ------------------------------------------------------------------- internals

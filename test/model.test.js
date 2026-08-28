@@ -421,6 +421,14 @@ t.test("names the missing file, not systemd's boilerplate", () => {
   )
 })
 
+// `AUTH: Received control message: AUTH_FAILED` is the server saying the
+// username or password is wrong, and nothing about that sentence says so. It
+// is the one class of failure the user can fix in the panel they are already
+// looking at, so it is restated rather than passed through. Pinned as a
+// constant because two tests assert it and a paraphrase that drifts apart
+// from the translation table would pass both.
+const AUTH_FAILED_MESSAGE = "The server rejected the username or password for this profile."
+
 t.test("only reads the attempt that just failed", () => {
   // The journal keeps every previous run. Reporting an hour-old error against
   // a fresh attempt is worse than reporting nothing.
@@ -432,7 +440,7 @@ t.test("only reads the attempt that just failed", () => {
     "AUTH: Received control message: AUTH_FAILED",
     "Failed to start OpenVPN tunnel for x."
   ].join("\n")
-  t.eq(M.journalError(stale), "AUTH: Received control message: AUTH_FAILED")
+  t.eq(M.journalError(stale), AUTH_FAILED_MESSAGE)
 })
 
 t.test("a server-pushed unknown option is not a failure", () => {
@@ -457,7 +465,32 @@ t.test("authentication failure outranks the cascade behind it", () => {
     "AUTH: Received control message: AUTH_FAILED",
     "Exiting due to fatal error"
   ].join("\n")
-  t.eq(M.journalError(cascade), "AUTH: Received control message: AUTH_FAILED")
+  t.eq(M.journalError(cascade), AUTH_FAILED_MESSAGE)
+})
+
+t.test("a missing credential file is explained, not quoted", () => {
+  // The state a profile sits in between import and the first save: the config
+  // points at <name>.auth and the helper has not been asked for one yet.
+  const noCreds = [
+    "Starting OpenVPN tunnel for x...",
+    "Options error: --auth-user-pass fails with 'x.auth': No such file or directory (errno=2)",
+    "Failed to start OpenVPN tunnel for x."
+  ].join("\n")
+  t.eq(M.journalError(noCreds),
+       "This profile needs a username and password, which have not been saved yet.")
+})
+
+t.test("credentials survive a poll that restates other fields", () => {
+  // The trap this whole file exists to catch: the poll rebuilds every tunnel
+  // on every tick, so a field the poll does not restate is silently dropped.
+  // A credential offer that vanishes seconds after import reads as a state bug.
+  const tunnel = M.makeTunnel({
+    name: "work", protocol: "openvpn",
+    needsCredentials: true, hasCredentials: true
+  })
+  const polled = M.updateTunnel(tunnel, { state: "up", device: "tun0" })
+  t.eq(polled.needsCredentials, true)
+  t.eq(polled.hasCredentials, true)
 })
 
 t.test("says nothing rather than something wrong", () => {

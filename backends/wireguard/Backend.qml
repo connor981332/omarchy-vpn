@@ -71,6 +71,11 @@ QtObject {
   // IFNAMSIZ. wg-quick enforces it too, in its own argument parsing:
   //   [[ $CONFIG_FILE =~ (^|/)([a-zA-Z0-9_=+.-]{1,15})\.conf$ ]] || die ...
   // so a longer name produces a profile that installs and can never start.
+  // WireGuard authenticates with the keys already inside the config, so there
+  // is nothing to store and no credential UI. The helper refuses the verb for
+  // this protocol too, so a bug here cannot create a file wg-quick ignores.
+  readonly property bool supportsCredentials: false
+
   readonly property int maxNameLength: 15
 
   // ExecStart is `/usr/bin/wg-quick up %i`, and wg-quick turns that instance

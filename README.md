@@ -101,6 +101,34 @@ limit, because `wg-quick` names the interface after the file; and a
 `PostUp`/`PreUp` hook naming an absolute path is looked for on your system
 before anything is installed.
 
+### Profiles that need a username and password
+
+Most commercial providers ship a profile with a bare `auth-user-pass` line,
+which means "ask on the terminal". The VPN service has no terminal, so such a
+profile would start and hang. Importing one instead points it at a credential
+file and offers you two fields under the profile row; enter them once and the
+tunnel connects, reconnects and survives a reboot without asking again.
+
+Credentials are stored in **`/etc/openvpn/client/<profile>.auth`, mode 0600**,
+owned by the same user as the rest of the profile — username on the first line,
+password on the second, which is the format OpenVPN itself defines. Deleting
+the profile deletes them; **Remove** under the profile clears them on their own.
+
+Be clear about what that does and does not protect:
+
+- **Root can read them.** So can anyone who can become root on your machine.
+- **Your own user account cannot** — the profile directory is not readable by
+  an unprivileged process at all. This is the main reason it is a root-owned
+  file rather than the session keyring: the keyring unlocks automatically at
+  login and hands secrets to any process running as you, without a prompt.
+- **At rest they rely on disk encryption**, which Omarchy enables by default.
+- **An unencrypted backup of `/etc` carries them off the encrypted disk.** Full
+  disk encryption does not travel with a tarball. If you back up `/etc`, that
+  backup holds your VPN password in plaintext.
+
+WireGuard profiles carry their keys inline and never ask for any of this, so
+they are never offered the fields.
+
 ### Why your profile gets rewritten
 
 `openvpn-client@.service` sets `ProtectHome=true`, so the service sees an empty
@@ -185,6 +213,10 @@ this costs no extra authorization prompt. For the full story:
 systemctl status openvpn-client@<profile>
 journalctl -u openvpn-client@<profile> -n 50
 ```
+
+**"The server rejected the username or password for this profile."** — exactly
+that; the credentials are wrong or expired. Press **Change** under the profile
+and enter them again.
 
 **"Authorization was declined."** — the polkit prompt was dismissed or the
 password was wrong. Nothing was changed.

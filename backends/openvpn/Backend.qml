@@ -37,6 +37,24 @@ QtObject {
   // cap is the only limit that applies.
   readonly property int maxNameLength: 64
 
+  // Whether a profile of this protocol can have a username and password
+  // stored for it. Service.qml and Panel.qml gate the whole credential UI on
+  // this rather than on the protocol name, so a backend that authenticates
+  // some other way simply never grows the offer.
+  readonly property bool supportsCredentials: true
+
+  // Wording for that UI. It lives here because what the two fields mean is
+  // protocol knowledge: these are the account credentials the VPN provider
+  // issued, not a passphrase for a key file.
+  readonly property var credentialLabels: ({
+    title: "Username and password",
+    username: "Username",
+    password: "Password",
+    explain: "This profile asks for a username and password. They are stored in "
+      + "a root-only file beside the profile, which is how OpenVPN expects to "
+      + "read them and is what lets the tunnel reconnect without asking again."
+  })
+
   // The extension the profile takes once installed — the unit runs
   // `--config %i.conf`, so this is not a free choice.
   readonly property string configExtension: "conf"

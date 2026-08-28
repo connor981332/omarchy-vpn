@@ -189,6 +189,75 @@ else
   fail=$((fail + 1))
 fi
 
+echo "# credentials"
+# The whole point of the design is that the secret never becomes an argument,
+# so the first check is on the interface rather than on behaviour: there is no
+# positional slot after <name> for set-credentials to put one in.
+if grep -qE 'set-credentials\)[^;]*cmd_set_credentials "\$@"' "$HELPER" \
+   && grep -qE 'IFS= read -r password' "$HELPER"; then
+  echo "ok - the password is read from stdin, not taken from argv"
+  pass=$((pass + 1))
+else
+  echo "not ok - set-credentials does not read its password from stdin"
+  fail=$((fail + 1))
+fi
+
+# ...and the same property stated the other way round: no line in the helper
+# may pass a password-shaped variable to a command.
+if grep -nE '(printf|echo|install|cp)[^\n]*\$(\{)?password' "$HELPER" \
+     | grep -qv "printf '%s\\\\n%s\\\\n'"; then
+  echo "not ok - a password reaches a command line somewhere in the helper"
+  grep -nE '(printf|echo|install|cp)[^\n]*\$(\{)?password' "$HELPER" | sed 's/^/  /'
+  fail=$((fail + 1))
+else
+  echo "ok - the password only ever reaches a file, through printf"
+  pass=$((pass + 1))
+fi
+
+refuses "usage" set-credentials openvpn
+refuses "usage" clear-credentials openvpn
+refuses "unknown protocol" set-credentials badproto name
+refuses "invalid profile name" set-credentials openvpn "../../etc/passwd"
+refuses "invalid profile name" clear-credentials openvpn "a/b"
+
+# WireGuard authenticates with keys already inside the config. Asking to store
+# a username and password for one is a caller bug, and refusing it here means
+# the widget cannot invent a credential file the protocol has no use for.
+refuses "do not use stored credentials" set-credentials wireguard demo
+refuses "do not use stored credentials" clear-credentials wireguard demo
+
+# Credentials for a profile that is not installed would be a file the widget
+# can never see again — it cannot list that directory — so it is refused.
+# Needs the openvpn package for the directory to exist; without it the earlier
+# require_dir path covers the same ground.
+if [[ -d /etc/openvpn/client ]]; then
+  printf 'user\npass\n' | "$HELPER" set-credentials openvpn zz-definitely-not-installed \
+    >/dev/null 2>"$TMP/cred.err"
+  if grep -q "no profile named" "$TMP/cred.err"; then
+    echo "ok - refuses credentials for a profile that is not installed"
+    pass=$((pass + 1))
+  else
+    echo "not ok - refuses credentials for a profile that is not installed"
+    sed 's/^/  /' "$TMP/cred.err"
+    fail=$((fail + 1))
+  fi
+else
+  echo "ok - SKIP: /etc/openvpn/client absent, so the orphan-credentials path cannot run here"
+  pass=$((pass + 1))
+fi
+
+# Deleting a profile must delete its credentials, and it does so because
+# `<name>.auth` falls under the `$name.*` glob cmd_remove already walks rather
+# than because of a second rule that could drift away from this one.
+if grep -qE 'for entry in "\$dir/\$name" "\$dir/\$name"\.\*' "$HELPER" \
+   && grep -qE 'credential_ext\(\)' "$HELPER"; then
+  echo "ok - remove's glob covers the credential file"
+  pass=$((pass + 1))
+else
+  echo "not ok - remove may leave credentials behind"
+  fail=$((fail + 1))
+fi
+
 echo "1..$((pass + fail))"
 echo "# pass $pass  fail $fail"
 [[ $fail -eq 0 ]]
