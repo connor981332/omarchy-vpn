@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "connor.vpn",
   "name": "VPN",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Connor Bunch",
   "license": "MIT",
   "description": "OpenVPN and WireGuard status, connect/disconnect, profile import, and tunnel-scoped stats in the Omarchy bar.",

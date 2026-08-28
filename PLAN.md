@@ -240,10 +240,23 @@ Two findings from that work:
   the instance been escaped, `%i` would have expanded to `harness\x2dwg` and
   `wg-quick` would have looked for a config that does not exist.
 
-**Still not done:** no WireGuard profile has been imported through the *UI* —
-the harness drives `Config.plan` → `stage-profile` → `install-profile`
-directly and never touches the QML layer, so the panel has never rendered a
-WireGuard row. That is a human check, like the polkit prompt.
+#### Status: complete, 2026-08-27
+
+The UI path is now walked end to end on real hardware. Two throwaway profiles
+from `test/harness/make-demo-profile.sh` were imported through the panel,
+installed through the polkit prompt, and connected through the stock
+`wg-quick@` unit: the row renders, the requirement note renders under the
+profile that needs it, the Install button hands off correctly, and the panel
+reads live kernel state back from the interface.
+
+**One thing the demo profiles deliberately cannot prove: default-route
+capture.** They set `AllowedIPs = 10.99.0.0/24`, not `0.0.0.0/0`, and their
+endpoint is a TEST-NET-3 literal that nothing answers. With a default route
+they would blackhole the machine's networking, which is not a thing a test
+fixture may do. So the panel correctly reports "Default route: not via
+<name>" — the row doing its job on a genuinely half-up tunnel. Full-tunnel
+capture needs a real server and remains a human check, the same caveat the
+OpenVPN side carries.
 
 ### Also in this phase — surface why a tunnel actually failed
 
@@ -456,10 +469,11 @@ relevant log on failure.
 
 ## Consolidated verify-before-building list
 
-- [ ] `wg-quick@.service` ships with `wireguard-tools`
-- [ ] `wg-quick@.service`'s sandboxing directives (`ProtectHome`?)
-- [ ] `/etc/wireguard` mode and owner as shipped
-- [ ] `wg show` unprivileged?
+- [x] `wg-quick@.service` ships with `wireguard-tools` — **yes** (Phase 2)
+- [x] `wg-quick@.service`'s sandboxing directives — **none at all** (Phase 2)
+- [x] `/etc/wireguard` mode and owner as shipped — **0700 root:root**, by the
+      package itself rather than tmpfiles (Phase 2)
+- [x] `wg show` unprivileged? — **no**, so last-handshake age is dropped (Phase 2)
 - [x] `/etc/openvpn/client` exists right after a fresh install — **yes**, via
       the package's tmpfiles and pacman's post-transaction hook (Phase 1)
 - [ ] nftables coexistence with Docker and NetworkManager
