@@ -468,6 +468,30 @@ t.test("authentication failure outranks the cascade behind it", () => {
   t.eq(M.journalError(cascade), AUTH_FAILED_MESSAGE)
 })
 
+t.test("a missing key file names the file", () => {
+  // The Tier 2 failure this came from: the panel answered "Exiting due to
+  // fatal error" for a profile whose side files were not in place, because
+  // that phrase was a recognised cause and therefore outranked the line above
+  // it that named the file.
+  const missingKey = [
+    "Starting OpenVPN tunnel for x...",
+    "Cannot pre-load keyfile (x.tls-auth)",
+    "Exiting due to fatal error",
+    "openvpn-client@x.service: Main process exited, code=exited, status=1/FAILURE",
+    "Failed to start OpenVPN tunnel for x."
+  ].join("\n")
+  t.eq(M.journalError(missingKey), "Cannot pre-load keyfile (x.tls-auth)")
+})
+
+t.test("the daemon's last words are used only when they are all it said", () => {
+  const nothingElse = [
+    "Starting OpenVPN tunnel for x...",
+    "Exiting due to fatal error",
+    "Failed to start OpenVPN tunnel for x."
+  ].join("\n")
+  t.eq(M.journalError(nothingElse), "Exiting due to fatal error")
+})
+
 t.test("a missing credential file is explained, not quoted", () => {
   // The state a profile sits in between import and the first save: the config
   // points at <name>.auth and the helper has not been asked for one yet.
