@@ -129,11 +129,10 @@ Your original file is not modified or moved.
 
 A WireGuard profile is normally self-contained — its keys are inline — so
 steps 2 and 3 do almost nothing and the config is installed as you wrote it.
-Two things are checked that `wg-quick` would otherwise only complain about
+One thing is checked that `wg-quick` would otherwise only complain about
 later: the profile name must fit the kernel's 15-character interface-name
-limit, because `wg-quick` names the interface after the file; and a
-`PostUp`/`PreUp` hook naming an absolute path is looked for on your system
-before anything is installed.
+limit, because `wg-quick` names the interface after the file. `PreUp`,
+`PostUp`, `PreDown` and `PostDown` are removed — see below.
 
 ### Profiles that need a username and password
 
@@ -218,14 +217,31 @@ then die. The importer copies those files next to the config and re-points the
 directives at them, which is the only way to make such a profile work under the
 stock unit.
 
-Two things it deliberately does **not** rewrite:
+### Script hooks are removed, and why
 
-- **`up` / `down` script hooks.** A hook lives wherever you installed it. If it
-  points into `/home` you get a warning at import time rather than a tunnel
-  that mysteriously has no DNS.
-- **`script-security` and the hooks themselves.** They are preserved exactly.
-  (NetworkManager's importer drops them, which is one of the reasons this
-  widget does not use NetworkManager.)
+The VPN daemon runs as **root** — neither `openvpn-client@.service` nor
+`wg-quick@.service` drops privilege — and it runs whatever the profile tells
+it to. So in a profile you downloaded, these lines are the author's choice of
+what root does the moment you connect:
+
+| OpenVPN | `up`, `down`, `route-up`, `route-pre-down`, `ipchange`, `client-connect`, `client-disconnect`, `learn-address`, `tls-verify`, `auth-user-pass-verify`, `tls-crypt-v2-verify`, `plugin`, `script-security`, `log`, `log-append`, `status`, `writepid` |
+| --- | --- |
+| **WireGuard** | `PreUp`, `PostUp`, `PreDown`, `PostDown` |
+
+They are taken out of the config that gets installed, and the import tells you
+exactly which lines were dropped so you can take them to whoever wrote the
+profile. A warning would not have been enough: it leaves the line in the file
+that root then reads, and approving a prompt labelled "install a VPN profile"
+is not approving a root shell.
+
+In practice this costs nothing on Arch. The hooks commercial profiles ship
+(`up /etc/openvpn/update-resolv-conf`, `update-systemd-resolved`) come from
+Debian packaging; Arch's `openvpn` package ships neither script, so those lines
+could not have run here anyway.
+
+`user`, `group` and `chroot` are **kept** — they give the daemon less than it
+started with, and removing them would make your profile run with more
+privilege than its author asked for.
 
 ## What the panel shows
 

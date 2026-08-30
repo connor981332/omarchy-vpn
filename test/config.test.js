@@ -161,22 +161,38 @@ t.test("rewritten paths are bare filenames, not absolute", () => {
   planned.assets.forEach((a) => t.ok(a.target.indexOf("/") === -1, a.target))
 })
 
+const DROPPED = ["askpass", "script-security", "up ", "down "]
+const kept = (l) => !DROPPED.some((d) => l.trim().indexOf(d) === 0)
+
 t.test("leaves every other directive byte-identical", () => {
-  const before = REAL_PROFILE.split("\n").filter((l) => l.indexOf("askpass") === -1)
-  const after = planned.content.split("\n").filter((l) => l.indexOf("askpass") === -1)
+  const before = REAL_PROFILE.split("\n").filter(kept)
+  const after = planned.content.split("\n").filter(kept)
   t.eq(after.filter((l) => l !== ""), before.filter((l) => l !== ""))
 })
 
-t.test("keeps script-security and the up/down hooks", () => {
-  // NetworkManager's importer drops these; that is a stated reason it was
-  // rejected as the control plane, so it must not be reintroduced here.
-  t.ok(planned.content.indexOf("script-security 2") !== -1)
-  t.ok(planned.content.indexOf("up /usr/bin/update-systemd-resolved") !== -1)
+t.test("removes script-security and the up/down hooks", () => {
+  // The unit runs openvpn as root, so these are the profile author's choice
+  // of what root does when the tunnel starts. A warning would leave the line
+  // in place, which is not a control.
+  t.ok(planned.content.indexOf("script-security") === -1, planned.content)
+  t.ok(planned.content.indexOf("update-systemd-resolved") === -1, planned.content)
 })
 
-t.test("reports no errors and no warnings for the real profile", () => {
+t.test("`down-pre` is not mistaken for `down`", () => {
+  // The list is matched on the whole directive, not a prefix. `down-pre` is a
+  // flag with no argument and nothing to do with running anything.
+  t.ok(planned.content.indexOf("down-pre") !== -1, planned.content)
+})
+
+t.test("says what it removed, naming the lines", () => {
+  t.eq(planned.removed.map((r) => r.key), ["script-security", "up", "down"])
+  t.eq(planned.warnings.length, 1)
+  t.ok(planned.warnings[0].indexOf("up /usr/bin/update-systemd-resolved") !== -1,
+       planned.warnings[0])
+})
+
+t.test("reports no errors for the real profile", () => {
   t.eq(planned.errors, [])
-  t.eq(planned.warnings, [])
 })
 
 t.test("carries the endpoint through", () => {
@@ -228,16 +244,10 @@ t.test("handles a quoted path with spaces", () => {
   t.eq(p.assets[0].source, "/home/x/my certs/ca.crt")
 })
 
-t.test("warns about a hook under /home instead of silently breaking", () => {
+t.test("a hook is removed, not copied and not rewritten", () => {
   const p = C.plan("client\nremote a 1\nup /home/x/bin/hook.sh\n", { name: "w", sourceDir: "/t" })
-  t.eq(p.assets, [], "a script is not copied")
-  t.ok(p.warnings.join(" ").indexOf("home directory") !== -1, p.warnings.join(" "))
-  t.ok(p.content.indexOf("up /home/x/bin/hook.sh") !== -1, "the line is left as written")
-})
-
-t.test("does not warn about a hook outside /home", () => {
-  const p = C.plan("client\nremote a 1\nup /usr/bin/hook\n", { name: "w", sourceDir: "/t" })
-  t.eq(p.warnings, [])
+  t.eq(p.assets, [], "a script is never an asset")
+  t.ok(p.content.indexOf("hook.sh") === -1, p.content)
 })
 
 // `auth-user-pass` with no argument means "prompt on the terminal". The
@@ -289,46 +299,81 @@ t.test("errors surface for a bad file rather than throwing", () => {
   t.ok(p.errors.length > 0)
 })
 
-t.suite("hook targets")
+t.suite("directives that would run as root")
 
-// The hook that actually broke a working profile on 2026-08-27: the package
-// providing it was removed, the config still parsed and imported cleanly, and
-// the failure only appeared at connect time.
-const WITH_HOOK = [
-  "client",
-  "dev tun",
-  "remote vpn.example.com 1194",
-  "script-security 2",
-  "up /usr/bin/update-systemd-resolved",
-  "down /usr/bin/update-systemd-resolved"
-].join("\n")
+// Every one of these hands the author of a downloaded profile either code
+// execution or a file write, as root, the moment the user starts the tunnel.
+// The unit sets no User=, so there is nothing else in the way.
+const UNSAFE = [
+  ["up /bin/sh", "up"],
+  ["down /bin/sh", "down"],
+  ["route-up /bin/sh", "route-up"],
+  ["route-pre-down /bin/sh", "route-pre-down"],
+  ["ipchange /bin/sh", "ipchange"],
+  ["client-connect /bin/sh", "client-connect"],
+  ["client-disconnect /bin/sh", "client-disconnect"],
+  ["learn-address /bin/sh", "learn-address"],
+  ["tls-verify /bin/sh", "tls-verify"],
+  ["auth-user-pass-verify /bin/sh via-file", "auth-user-pass-verify"],
+  ["tls-crypt-v2-verify /bin/sh", "tls-crypt-v2-verify"],
+  // No script-security needed for this one, which is what makes leaving it
+  // off the list worse than leaving off a script hook.
+  ["plugin /tmp/evil.so", "plugin"],
+  ["script-security 2", "script-security"],
+  // ProtectSystem=true leaves /etc writable, so a chosen write path reaches
+  // /etc/systemd/system.
+  ["log /etc/systemd/system/x.service", "log"],
+  ["log-append /etc/x", "log-append"],
+  ["status /etc/x", "status"],
+  ["writepid /etc/x", "writepid"]
+]
 
-t.test("hands absolute hook paths back for the caller to look for", () => {
-  const p = C.plan(WITH_HOOK, { name: "h", sourceDir: "/t" })
-  t.eq(p.hookTargets.length, 2)
-  t.eq(p.hookTargets[0], "/usr/bin/update-systemd-resolved")
+UNSAFE.forEach(([line, key]) => {
+  t.test("removes `" + key + "`", () => {
+    const p = C.plan("client\nremote a 1\n" + line + "\n", { name: "h", sourceDir: "/t" })
+    t.ok(p.content.indexOf(line) === -1, p.content)
+    t.eq(p.removed.map((r) => r.key), [key])
+    t.eq(p.errors, [])
+  })
 })
 
-t.test("the hook itself is never rewritten", () => {
-  // A hook lives wherever it was installed. Only data files move.
-  const p = C.plan(WITH_HOOK, { name: "h", sourceDir: "/t" })
-  t.ok(p.content.indexOf("up /usr/bin/update-systemd-resolved") !== -1)
-  t.eq(p.assets.length, 0)
+t.test("the `--` spelling is the same directive", () => {
+  // OpenVPN accepts an option in a config file with or without the `--` it
+  // would carry on the command line. Matching only one spelling is a bypass,
+  // not a nicety.
+  const p = C.plan("client\nremote a 1\n--up /bin/sh\n", { name: "h", sourceDir: "/t" })
+  t.eq(p.removed.map((r) => r.key), ["up"])
+  t.ok(p.content.indexOf("/bin/sh") === -1, p.content)
 })
 
-t.test("a hook under /home warns instead, and is not double-reported", () => {
-  // That one is already a hard problem (ProtectHome) with its own message;
-  // adding "not on this system" to it would be wrong as well as noisy.
-  const p = C.plan("client\nremote h 1\nup /home/you/hook.sh", { name: "h", sourceDir: "/t" })
-  t.eq(p.hookTargets.length, 0)
-  t.ok(p.warnings.length === 1)
+t.test("the quoted spelling is the same directive", () => {
+  const p = C.plan('client\nremote a 1\n"up" /bin/sh\n', { name: "h", sourceDir: "/t" })
+  t.eq(p.removed.map((r) => r.key), ["up"])
 })
 
-t.test("a bare command name is not treated as a path", () => {
-  // `up systemd-resolved-helper` resolves through the daemon's own lookup,
-  // not ours — checking it against the filesystem would warn wrongly.
-  const p = C.plan("client\nremote h 1\nup some-helper", { name: "h", sourceDir: "/t" })
-  t.eq(p.hookTargets.length, 0)
+t.test("a hook inside an inline block is data, not a directive", () => {
+  // Base64 can begin with anything. Refusing a good profile is the failure
+  // that would actually be met in the field.
+  const p = C.plan("client\nremote a 1\n<ca>\nup\nplugin\n</ca>\n",
+                   { name: "h", sourceDir: "/t" })
+  t.eq(p.removed, [])
+  t.ok(p.content.indexOf("plugin") !== -1)
+})
+
+t.test("privilege-dropping directives survive", () => {
+  // `user`/`group`/`chroot` give the daemon less than it started with.
+  // Stripping them would make the profile run with more privilege than its
+  // author asked for.
+  const p = C.plan("client\nremote a 1\nuser nobody\ngroup nobody\n",
+                   { name: "h", sourceDir: "/t" })
+  t.eq(p.removed, [])
+  t.ok(p.content.indexOf("user nobody") !== -1)
+})
+
+t.test("a profile with no hooks is untouched and unremarked", () => {
+  const p = C.plan("client\nremote a 1\nverb 3\n", { name: "h", sourceDir: "/t" })
+  t.eq(p.removed, [])
+  t.eq(p.warnings, [])
 })
 
 t.suite("endpoint transport")

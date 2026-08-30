@@ -535,13 +535,22 @@ var _JOURNAL_TRANSLATIONS = [
 var _JOURNAL_STRONG = [
   /AUTH_FAILED|auth-failure/i,
   /^Options error:/i,
-  /(No such file or directory|Permission denied|Cannot open|Cannot resolve|Cannot load)/i,
+  // `Cannot pre-load` is the daemon's wording for a key or certificate file it
+  // could not read — "Cannot pre-load keyfile (work.tls-auth)" — which is the
+  // exact case this list exists for, and the one a profile whose side files
+  // did not make it into place produces.
+  /(No such file or directory|Permission denied|Cannot open|Cannot resolve|Cannot load|Cannot pre-load)/i,
   // A helper the tunnel needs that is not installed. The line names the
   // missing command, which is the whole answer.
   /: command not found/i,
-  /^(TLS Error|RESOLVE:|Could not|Unable to)/i,
-  /Exiting due to fatal error/i
+  /^(TLS Error|RESOLVE:|Could not|Unable to)/i
 ]
+
+// Deliberately NOT in that list: `Exiting due to fatal error`. It is the
+// daemon's last words in almost every failure and names nothing, so as a
+// recognised cause it outranked the first line of the journal — which is
+// where the actual reason is. It survives as the fallback's answer when it
+// really is all the daemon said.
 
 function _isJournalNoise(line) {
   for (var i = 0; i < _JOURNAL_NOISE.length; i++) {

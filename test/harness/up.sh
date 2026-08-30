@@ -22,9 +22,10 @@ NS="vpnharness"
 # exactly the case that catches an instance name being escaped when it must
 # not be. A profile called "harness" would pass either way and prove nothing.
 PROFILE="harness-test"
-# A second profile, identical but for a hook that is not installed. It exists
-# to prove the panel reports the daemon's reason and not systemd's boilerplate.
-BAD_PROFILE="harness-badhook"
+# A second profile, identical but for the certificate files it names never
+# being staged beside it. It exists to prove the panel reports the daemon's
+# reason and not systemd's boilerplate.
+BAD_PROFILE="harness-badstart"
 # A third, whose config asks for a username and password. It connects to a
 # second server that actually checks them, so both the accept and the reject
 # path are real rather than simulated.
@@ -116,9 +117,12 @@ cleanup() {
   # Removes the profile AND its credential file, which is the behaviour the
   # section asserts — so a failed run leaves no secret behind either.
   "$ROOT/bin/install-profile" remove openvpn "$AUTH_PROFILE" >/dev/null 2>&1 || true
+  # Never installed if the boundary held — removed anyway, so a regression
+  # that DOES install it does not leave it behind.
+  "$ROOT/bin/install-profile" remove openvpn harness-hook >/dev/null 2>&1 || true
   systemctl stop "$WG_UNIT" >/dev/null 2>&1 || true
   "$ROOT/bin/install-profile" remove wireguard "$WG_PROFILE" >/dev/null 2>&1 || true
-  # The badhook profile is meant to fail, so systemd remembers it as `failed`
+  # The badstart profile is meant to fail, so systemd remembers it as `failed`
   # long after its files are gone. Leaving that on the user's machine is the
   # harness dirtying a system it does not own.
   systemctl reset-failed "openvpn-client@${PROFILE}.service" \
@@ -359,13 +363,18 @@ check "no config file is left behind" $(( $? == 1 ? 0 : 1 ))
 
 # The gap this closes: `systemctl start` prints only that the job failed, so
 # the panel used to show systemd's boilerplate while the actual reason sat in
-# the journal. A hook pointing at a path that is not installed is the most
-# likely version of this a stranger will hit — the config parses and imports
-# cleanly, and nothing objects until connect time.
+# the journal.
+#
+# This used to fail the profile with an `up` hook pointing at a path that is
+# not installed, which was the most likely version a stranger would hit. That
+# is no longer reachable: script hooks are removed at import and refused again
+# by the privileged helper, because the daemon that would run them runs as
+# root. The next most likely version is a profile whose certificate files did
+# not make it into place, which fails the same way — immediately, with the
+# reason only in the journal.
 echo "# a failed start explains itself"
 
 BAD_UNIT="openvpn-client@${BAD_PROFILE}.service"
-BAD_HOOK="/usr/lib/connor-vpn-harness-hook-that-is-not-installed"
 BAD_STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/$BAD_PROFILE"
 
 # Planned again under its OWN name, not by reusing the first profile's staging
@@ -380,29 +389,34 @@ BAD_PLAN_JSON="$(cd "$ROOT" && "$NODE" -e '
                       { name: process.argv[2], sourceDir: src.replace(/\/[^/]+$/, "") })
   fs.writeFileSync(process.argv[3], plan.content)
   console.log(JSON.stringify({ assets: plan.assets }))
-' "$WORK/client.ovpn" "$BAD_PROFILE" "$WORK/badhook-base.conf")"
+' "$WORK/client.ovpn" "$BAD_PROFILE" "$WORK/badstart.conf")"
 
-BAD_STAGE_ARGS=()
-while IFS=$'\t' read -r source target; do
-  [[ -n $source ]] && BAD_STAGE_ARGS+=(--asset "$source" "$target")
-done < <(echo "$BAD_PLAN_JSON" | "$NODE" -e '
-  let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
-    JSON.parse(s).assets.forEach(a => console.log(a.source + "\t" + a.target))
-  })')
-
-test -s "$WORK/badhook-base.conf"
+test -s "$WORK/badstart.conf"
 check "the broken profile's config was actually written" $?
 
-{ cat "$WORK/badhook-base.conf"; echo "script-security 2"; echo "up $BAD_HOOK"; } \
-  > "$WORK/badhook.conf"
+# The file names at least one asset, or omitting them proves nothing.
+#
+# All of them, not just the first: OpenVPN stops at whichever it loads first,
+# and that is not the order they appear in the config. It pre-loads the
+# tls-auth key before it reads the CA, so asserting on assets[0] asserts on
+# the wrong filename.
+MISSING_ASSETS=()
+while read -r target; do
+  [[ -n $target ]] && MISSING_ASSETS+=("$target")
+done < <(echo "$BAD_PLAN_JSON" | "$NODE" -e '
+  let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+    JSON.parse(s).assets.forEach(a => console.log(a.target))
+  })')
 
-"$ROOT/bin/stage-profile" "$BAD_STAGING" "$BAD_PROFILE.conf" "${BAD_STAGE_ARGS[@]}" \
-  --hook "$BAD_HOOK" < "$WORK/badhook.conf" > "$WORK/stage-badhook.out"
-check "staged the profile with the bogus hook" $?
+[[ ${#MISSING_ASSETS[@]} -gt 0 ]]
+check "the profile references files that can be left out" $? \
+  "the test profile is self-contained, so this section tests nothing"
 
-grep -q "^missing-hook: $BAD_HOOK\$" "$WORK/stage-badhook.out"
-check "import notices the hook is not on this system" $? \
-  "$(cat "$WORK/stage-badhook.out")"
+# Staged with NO --asset arguments: the config points at $MISSING_ASSET and
+# nothing puts it there.
+"$ROOT/bin/stage-profile" "$BAD_STAGING" "$BAD_PROFILE.conf" \
+  < "$WORK/badstart.conf" > "$WORK/stage-badstart.out"
+check "staged the profile without its certificates" $?
 
 "$ROOT/bin/install-profile" install openvpn "$BAD_PROFILE" "$BAD_STAGING" >/dev/null
 check "installed the deliberately broken profile" $?
@@ -410,7 +424,7 @@ check "installed the deliberately broken profile" $?
 # The point of the whole section: this must fail, and it must fail for the
 # reason we are about to go looking for.
 systemctl start "$BAD_UNIT" > "$WORK/start.out" 2> "$WORK/start.err"
-check "starting a profile with a missing hook fails" $(( $? != 0 ? 0 : 1 )) \
+check "starting a profile with a missing certificate fails" $(( $? != 0 ? 0 : 1 )) \
   "$(cat "$WORK/start.out" "$WORK/start.err")"
 
 # What the panel used to show, and what it shows now, from the same two sources
@@ -435,9 +449,12 @@ PANEL_SAYS="$(cd "$ROOT" && "$NODE" -e '
 echo "# systemd said:   $SYSTEMD_SAYS"
 echo "# the panel says: $PANEL_SAYS"
 
-[[ $PANEL_SAYS == *"$BAD_HOOK"* ]]
-check "the panel names the missing file" $? \
-  "got: $PANEL_SAYS"$'\n'"journal:"$'\n'"$(cat "$WORK/journal.txt")"
+named_asset=1
+for target in "${MISSING_ASSETS[@]}"; do
+  [[ $PANEL_SAYS == *"$target"* ]] && named_asset=0
+done
+check "the panel names the missing file" $named_asset \
+  "got: $PANEL_SAYS"$'\n'"expected one of: ${MISSING_ASSETS[*]}"$'\n'"journal:"$'\n'"$(cat "$WORK/journal.txt")"
 
 # And it is a real improvement, not the same boilerplate reformatted.
 [[ $PANEL_SAYS != "$SYSTEMD_SAYS" && $PANEL_SAYS != *"Job for"* ]]
@@ -445,6 +462,60 @@ check "and not systemd's job-failed boilerplate" $? "got: $PANEL_SAYS"
 
 "$ROOT/bin/install-profile" remove openvpn "$BAD_PROFILE" >/dev/null
 check "the broken profile was removed" $?
+
+# -------------------------------------------- the hook that never gets there
+
+# The privilege boundary, end to end and against the real helper. A profile
+# somebody downloaded chooses what root runs the moment the tunnel starts, so
+# the hook has to be gone from the file that reaches /etc — and the helper has
+# to refuse it even when the caller stages it anyway, because everything
+# before the helper runs as the user.
+echo "# a script hook never reaches /etc"
+
+HOOK_PROFILE="harness-hook"
+HOOK_STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/$HOOK_PROFILE"
+HOOK_MARKER="$WORK/hook-ran"
+
+# Planned from a config carrying a hook that would leave a file behind if it
+# ever ran: an assertion on a marker, not on rule text.
+{ cat "$WORK/client.ovpn"; echo "script-security 2"
+  echo "up \"/bin/sh -c 'touch $HOOK_MARKER'\""; } > "$WORK/hooked.ovpn"
+
+(cd "$ROOT" && "$NODE" -e '
+  const {load} = require("./test/qmljs")
+  const C = load("backends/openvpn/Config.js")
+  const fs = require("fs")
+  const src = process.argv[1]
+  const plan = C.plan(fs.readFileSync(src, "utf8"),
+                      { name: process.argv[2], sourceDir: src.replace(/\/[^/]+$/, "") })
+  fs.writeFileSync(process.argv[3], plan.content)
+' "$WORK/hooked.ovpn" "$HOOK_PROFILE" "$WORK/hooked.conf")
+
+grep -q 'script-security\|touch ' "$WORK/hooked.conf"
+check "import strips the hook from the config" $(( $? == 1 ? 0 : 1 )) \
+  "$(cat "$WORK/hooked.conf")"
+
+# Now the helper, handed the ORIGINAL config with the hook still in it — which
+# is what a caller that skipped or subverted the import would send.
+"$ROOT/bin/stage-profile" "$HOOK_STAGING" "$HOOK_PROFILE.conf" \
+  < "$WORK/hooked.ovpn" > /dev/null
+check "staged a config that still carries the hook" $?
+
+HOOK_REFUSAL="$("$ROOT/bin/install-profile" install openvpn "$HOOK_PROFILE" \
+  "$HOOK_STAGING" 2>&1)"
+HOOK_CODE=$?
+check "the helper refuses to install it" $(( HOOK_CODE != 0 ? 0 : 1 )) "$HOOK_REFUSAL"
+
+[[ $HOOK_REFUSAL == *"up"* ]]
+check "and says which directive" $? "got: $HOOK_REFUSAL"
+
+test -e "/etc/openvpn/client/$HOOK_PROFILE.conf"
+check "nothing was installed" $(( $? == 1 ? 0 : 1 ))
+
+test -e "$HOOK_MARKER"
+check "the hook never ran" $(( $? == 1 ? 0 : 1 ))
+
+rm -rf -- "$HOOK_STAGING"
 
 # ------------------------------------------------------------ credentials
 

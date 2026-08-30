@@ -138,32 +138,50 @@ t.test("warns when no peer can be dialled out to", () => {
   t.ok(C.plan(cfg, { name: "wg0" }).warnings.some(w => w.indexOf("Endpoint") !== -1))
 })
 
-t.suite("hooks")
+t.suite("hooks, which wg-quick eval()s as root")
 
-t.test("an absolute hook command is handed back to be looked for", () => {
+t.test("a hook is removed from the installed config", () => {
   const cfg = PROFILE + "\nPostUp = /usr/bin/nft -f /etc/wg.rules"
-  t.eq(C.plan(cfg, { name: "wg0" }).hookTargets[0], "/usr/bin/nft")
-})
-
-t.test("a hook under /home warns and is not reported as missing", () => {
-  const cfg = PROFILE + "\nPostUp = /home/you/setup.sh"
   const p = C.plan(cfg, { name: "wg0" })
-  t.eq(p.hookTargets.length, 0)
-  t.ok(p.warnings.some(w => w.indexOf("/home") !== -1))
+  t.ok(p.content.indexOf("PostUp") === -1, p.content)
+  t.eq(p.removed.map((r) => r.key), ["PostUp"])
 })
 
-t.test("a command resolved through PATH is left alone", () => {
-  // `PostUp = resolvectl dns %i 10.0.0.1` is normal and works. Checking it
-  // against the filesystem would warn about a profile that is fine.
-  const p = C.plan(PROFILE + "\nPostUp = resolvectl dns %i 10.0.0.1", { name: "wg0" })
-  t.eq(p.hookTargets.length, 0)
-  t.eq(p.warnings.length, 0)
-})
-
-t.test("every hook key is recognised", () => {
+t.test("every hook key is recognised, in any case", () => {
+  // wg-quick reads its keys case-insensitively, so a list that does not is
+  // simply a bypass.
   const cfg = PROFILE
-    + "\nPreUp = /a/one\nPostUp = /a/two\nPreDown = /a/three\nPostDown = /a/four"
-  t.eq(C.plan(cfg, { name: "wg0" }).hookTargets.length, 4)
+    + "\nPreUp = /a/one\npostup = /a/two\nPreDown = /a/three\nPOSTDOWN = /a/four"
+  const p = C.plan(cfg, { name: "wg0" })
+  t.eq(p.removed.length, 4)
+  t.ok(p.content.indexOf("/a/") === -1, p.content)
+})
+
+t.test("a hook resolved through PATH is removed too", () => {
+  // `PostUp = resolvectl dns %i 10.0.0.1` is normal and works — and is still
+  // the profile author choosing a command line that root will run.
+  const p = C.plan(PROFILE + "\nPostUp = resolvectl dns %i 10.0.0.1", { name: "wg0" })
+  t.eq(p.removed.length, 1)
+  t.ok(p.warnings.length === 1)
+})
+
+t.test("says what it removed, naming the lines", () => {
+  const p = C.plan(PROFILE + "\nPostUp = /bin/sh -c evil", { name: "wg0" })
+  t.ok(p.warnings[0].indexOf("PostUp = /bin/sh -c evil") !== -1, p.warnings[0])
+})
+
+t.test("everything else survives byte-identical", () => {
+  const cfg = PROFILE + "\nPostUp = /bin/sh"
+  const p = C.plan(cfg, { name: "wg0" })
+  const before = PROFILE.split("\n").filter((l) => l !== "")
+  const after = p.content.split("\n").filter((l) => l !== "")
+  t.eq(after, before)
+})
+
+t.test("a profile with no hooks is untouched and unremarked", () => {
+  const p = C.plan(PROFILE, { name: "wg0" })
+  t.eq(p.removed, [])
+  t.eq(p.content.replace(/\n+$/, ""), PROFILE.replace(/\n+$/, ""))
 })
 
 t.suite("the DNS trap")

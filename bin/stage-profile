@@ -14,12 +14,15 @@
 #
 # Usage:
 #   stage-profile <staging-dir> <config-filename> [--asset <source> <target>]...
-#                 [--hook <path>]... [--command <name>]...
+#                 [--command <name>]...
 #   ...with the config text on stdin.
 #
-# Prints `missing-hook: <path>` for every --hook that is not on this system,
-# `missing-command: <name>` for every --command not on PATH, then the staging
-# directory.
+# Prints `missing-command: <name>` for every --command not on PATH, then the
+# staging directory.
+#
+# There is no --hook: a profile's script hooks are removed at import rather
+# than installed and looked for, so by the time anything is staged there is no
+# hook left to find. See UNSAFE_DIRECTIVES in backends/openvpn/Config.js.
 
 set -euo pipefail
 
@@ -59,20 +62,11 @@ cat > "$staging/$config_name"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --command)
-      # Same idea as --hook, for something resolved through PATH rather than
-      # named by an absolute path. Reported, never fatal.
+      # A command the profile will need at connect time, resolved through
+      # PATH rather than named by an absolute path. Reported, never fatal.
       needed="${2-}"
       [[ -n $needed ]] || die "--command needs <name>"
       command -v "$needed" >/dev/null 2>&1 || echo "missing-command: $needed"
-      shift 2
-      ;;
-    --hook)
-      # A hook is not staged — it stays wherever it is installed. We only look,
-      # because the config parser is pure and cannot. Reported rather than
-      # fatal: the hook may legitimately arrive before the tunnel is first used.
-      hook="${2-}"
-      [[ -n $hook ]] || die "--hook needs <path>"
-      [[ -e $hook ]] || echo "missing-hook: $hook"
       shift 2
       ;;
     --asset)
