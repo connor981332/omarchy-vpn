@@ -15,8 +15,11 @@
 #   - the destination directory is chosen HERE from a protocol token, never
 #     taken from the caller;
 #   - the profile name must match a strict pattern, so it cannot traverse;
-#   - the staging directory may contain only regular files, so a symlink
-#     cannot make root copy something it was not shown.
+#   - the staging directory is copied into a root-owned one FIRST, without
+#     following symlinks, and only that copy is inspected and installed, so
+#     nothing the caller does afterwards can change what root reads;
+#   - the config is scanned for the directives that would let its author
+#     choose what root runs, and refused if it carries any.
 #
 # Usage:
 #   install-profile install <protocol> <name> <staging-dir>
@@ -85,6 +88,98 @@ profile_has_credentials() {
   esac
 }
 
+# ------------------------------------------------------- unsafe directives
+#
+# The second enforcement of the lists in backends/*/Config.js. That one runs
+# as the user, which makes it a convenience rather than a control: by the time
+# we are here the staged config is just bytes the caller produced, and the only
+# thing standing between "install a VPN profile" and "run this as root" is this
+# function. The two must agree — if a directive is added there, add it here.
+#
+# The unit runs the VPN daemon as root, so each of these hands the author of a
+# downloaded profile either code execution (a script hook, a plugin) or a file
+# write at a path they choose.
+OPENVPN_UNSAFE="up down route-up route-pre-down ipchange client-connect \
+client-disconnect learn-address tls-verify auth-user-pass-verify \
+tls-crypt-v2-verify plugin script-security log log-append status writepid"
+
+WIREGUARD_UNSAFE="preup postup predown postdown"
+
+# Refuses the config if it carries one. Reads the file that is about to be
+# installed, from the root-owned copy — never the caller's own.
+reject_unsafe_directives() {
+  local protocol="$1" file="$2" found=""
+
+  case "$protocol" in
+    openvpn)
+      # Inline blocks (<ca>…</ca>) are skipped: a PEM body is data, and a
+      # base64 line that happened to start with a keyword would otherwise
+      # refuse a perfectly good profile. A leading `--` is stripped because
+      # OpenVPN accepts a directive spelled either way in a config file, and
+      # so does the parser this list mirrors.
+      found="$(awk -v keys=" $OPENVPN_UNSAFE " '
+        /^[[:space:]]*<\/?[A-Za-z0-9_-]+>[[:space:]]*$/ {
+          if ($0 ~ /^[[:space:]]*<\//) { inline = 0 } else { inline = 1 }
+          next
+        }
+        inline { next }
+        {
+          key = $1
+          gsub(/"/, "", key)
+          sub(/^--/, "", key)
+          if (key != "" && index(keys, " " key " ") > 0) print key
+        }
+      ' "$file" | sort -u | tr '\n' ' ')"
+      ;;
+    wireguard)
+      found="$(awk -v keys=" $WIREGUARD_UNSAFE " '
+        {
+          line = $0
+          sub(/=.*$/, "", line)
+          gsub(/[[:space:]]/, "", line)
+          key = tolower(line)
+          if (key != "" && index($0, "=") > 0 && index(keys, " " key " ") > 0) print key
+        }
+      ' "$file" | sort -u | tr '\n' ' ')"
+      ;;
+    *) die "unknown protocol '$protocol'" ;;
+  esac
+
+  [[ -z ${found// /} ]] \
+    || die "refusing to install: the config carries ${found% } — a directive that would let it run commands or write files as root"
+}
+
+# Everything a staging directory must be before a single file is installed
+# from it. Called on the root-owned copy, never on the caller's own — see
+# cmd_install — and a separate function so test/helper.test.sh can exercise it
+# without the root that the rest of cmd_install needs.
+#
+# Vets the whole directory before writing anything: a partial install leaves a
+# profile that starts and then fails on a missing cert.
+vet_staging_dir() {
+  local protocol="$1" name="$2" dir="$3"
+  local ext entry base
+  ext="$(profile_ext "$protocol")"
+
+  # The config itself must be present, and must be named for the profile, so
+  # the unit's `--config %i.conf` finds it.
+  [[ -f "$dir/$name.$ext" && ! -L "$dir/$name.$ext" ]] \
+    || die "staging directory has no $name.$ext"
+
+  for entry in "$dir"/*; do
+    [[ -e $entry || -L $entry ]] || continue
+    base="$(basename "$entry")"
+    [[ ! -L $entry ]] || die "'$base' is a symlink"
+    [[ -f $entry ]] || die "'$base' is not a regular file"
+    [[ $base == "$name" || $base == "$name".* ]] \
+      || die "'$base' does not belong to profile '$name'"
+  done
+
+  # The config is the caller's bytes, and the daemon that reads it runs as
+  # root. This is the last point at which that can be refused.
+  reject_unsafe_directives "$protocol" "$dir/$name.$ext"
+}
+
 # A profile name becomes a filename and a systemd instance. Anything outside
 # this set is refused rather than sanitized: silently changing the name the
 # caller asked for is how a delete removes the wrong file.
@@ -112,32 +207,41 @@ cmd_install() {
   [[ -n $protocol && -n $name && -n $staging ]] || die "usage: install <protocol> <name> <staging-dir>"
   validate_name "$name"
 
-  local dir owner
+  local dir owner ext entry
   dir="$(profile_dir "$protocol")"
   owner="$(profile_owner "$protocol")"
+  ext="$(profile_ext "$protocol")"
   require_dir "$dir" "$protocol"
 
   [[ -d $staging ]] || die "staging directory '$staging' does not exist"
   [[ ! -L $staging ]] || die "staging directory is a symlink"
 
-  # The config itself must be present, and must be named for the profile, so
-  # the unit's `--config %i.conf` finds it.
-  local config="$staging/$name.$(profile_ext "$protocol")"
-  [[ -f $config ]] || die "staging directory has no $name.$(profile_ext "$protocol")"
+  # Take our own copy before looking at anything.
+  #
+  # The staging directory belongs to the unprivileged caller, so every check
+  # against it is a check against something that can change immediately
+  # afterwards: validate an entry, and by the time `install` reopens that same
+  # name it can be a symlink to a file only root can read. Copying first with
+  # --no-dereference removes the window rather than narrowing it — a symlink
+  # swapped in at any moment is copied AS a symlink, never followed, and then
+  # fails the validation below on an object that can no longer change.
+  #
+  # /run, not mktemp's default: TMPDIR is an environment variable, and while
+  # pkexec sanitizes the environment it hands us, a root-only directory named
+  # here is one less thing that depends on it.
+  local root_staging
+  root_staging="$(mktemp -d /run/connor.vpn-install.XXXXXXXX)" || die "cannot create a staging directory"
+  chmod 0700 "$root_staging"
+  # shellcheck disable=SC2064  # $root_staging is expanded now on purpose.
+  trap "rm -rf -- '$root_staging'" EXIT
+  cp -R --no-dereference --preserve=mode "$staging/." "$root_staging/" \
+    || die "cannot read the staging directory"
 
-  # Vet the whole staging directory before writing anything: a partial install
-  # leaves a profile that starts and then fails on a missing cert.
-  local entry
-  for entry in "$staging"/*; do
-    [[ -e $entry ]] || continue
-    [[ ! -L $entry ]] || die "'$(basename "$entry")' is a symlink"
-    [[ -f $entry ]] || die "'$(basename "$entry")' is not a regular file"
-    [[ $(basename "$entry") == "$name" || $(basename "$entry") == "$name".* ]] \
-      || die "'$(basename "$entry")' does not belong to profile '$name'"
-  done
+  # Everything from here reads $root_staging. Nothing reads $staging again.
+  vet_staging_dir "$protocol" "$name" "$root_staging"
 
   # 0600: these files carry private keys and passphrases.
-  for entry in "$staging"/*; do
+  for entry in "$root_staging"/*; do
     [[ -f $entry ]] || continue
     install -o "${owner%%:*}" -g "${owner##*:}" -m 0600 "$entry" "$dir/$(basename "$entry")"
   done
@@ -254,6 +358,13 @@ unit_name() {
 }
 
 # ------------------------------------------------------------------- dispatch
+
+# Sourcing this file defines its functions and runs nothing, so
+# test/helper.test.sh can exercise reject_unsafe_directives on its own. That
+# matters because the rest of cmd_install needs real root, and the one check
+# standing between an untrusted config and root running its author's commands
+# should not be the one check with no unprivileged test.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
 verb="${1-}"
 shift || true

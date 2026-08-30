@@ -30,8 +30,11 @@ The starter code drove `nmcli`. NM is already running on every Omarchy machine
 and would have cost nothing to call. It was rejected on capability, not
 overhead:
 
-- NM's OpenVPN importer **drops `script-security` and `up`/`down` hooks**,
-  silently changing the behaviour of a working profile.
+- NM's OpenVPN importer **drops `script-security` and `up`/`down` hooks**
+  silently. This widget drops them too — the daemon runs as root, so in a
+  downloaded profile they are the author's choice of what root runs — but says
+  which lines it removed instead of changing a profile's behaviour without
+  saying so.
 - No kill switch. Putting nftables beside NM's routing means two owners of the
   route table.
 - No per-app split tunnelling — NM can only express route-based splits.
@@ -140,14 +143,56 @@ process can invoke them with any arguments it likes:
 - Profile names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`, be ≤64 characters,
   and contain no `..`. Names are *refused*, never sanitized — silently changing
   the name a caller asked for is how a delete removes the wrong file.
-- A staging directory may contain only regular files belonging to that profile.
-  A symlink there would make root copy something it was not shown.
+- The staging directory belongs to the unprivileged caller, so it is **copied
+  into a root-owned one first**, with `--no-dereference`, and only that copy is
+  inspected and installed. Checking the caller's own directory and then
+  reopening the same pathnames is a check/use race: an entry validated as a
+  regular file can be a symlink to a root-only file by the time `install`
+  reads it. Copying first removes the window instead of narrowing it — a
+  symlink swapped in at any moment is copied *as* a symlink, never followed,
+  and then fails validation on an object that can no longer change.
+- That copy may contain only regular files belonging to that profile.
+- **The config may not carry a directive that would run code or write files as
+  root** (see below). This is enforced in the helper as well as at import,
+  because everything before the helper runs as the user — from root's point of
+  view the first check is input, not a control.
 - Every value the kill switch interpolates into an `nft` script (device, port,
   protocol, endpoint) has its own validator. That validation *is* the security
   boundary: a value that escaped its rule could write any rule at all.
 - Secrets arrive on **stdin, never argv**, because `/proc/<pid>/cmdline` is
   world-readable. Four separate mechanical checks enforce this, each verified
   to fail when deliberately broken.
+
+### The import boundary: a profile chooses what root runs
+
+Neither `openvpn-client@.service` nor `wg-quick@.service` sets `User=`, so the
+daemon runs as root and does whatever the config tells it to. In a profile the
+user downloaded, that makes a script hook a way to turn an approved import into
+root command execution.
+
+Such directives are therefore **removed from the config that gets installed**,
+not warned about — a warning leaves the line in the file that root then reads.
+The lists live in `backends/openvpn/Config.js` (`UNSAFE_DIRECTIVES`) and
+`backends/wireguard/Config.js` (`HOOK_KEYS`), and are mirrored in
+`bin/install-profile`; `test/architecture.test.sh` fails if the two drift
+apart. Three things they cover that are easy to miss:
+
+- `plugin` needs no `script-security` at all, so it is the one that would
+  survive a list built only from "script hooks".
+- OpenVPN accepts a directive in a config file spelled `up` or `--up`, and
+  quoted. Matching one spelling is a bypass, not a nicety.
+- `log`, `status` and `writepid` are root *writes* at a path the profile picks,
+  and `ProtectSystem=true` leaves `/etc` writable.
+
+`user`, `group` and `chroot` are deliberately kept: they drop privilege, and
+stripping them would make a profile run with more than its author asked for.
+
+What is removed is reported to the user verbatim, line by line, so a profile
+that genuinely needed its hook produces a question its author can answer rather
+than a tunnel that silently behaves differently. On Arch the practical cost is
+close to zero — the hooks commercial profiles carry (`update-resolv-conf`,
+`update-systemd-resolved`) are Debian packaging and ship with neither Arch
+package, so they were already dead lines here.
 
 ---
 
@@ -363,6 +408,12 @@ each exists because breaking it would be silent.
   command array carries no secret, the payload is cleared the moment it is
   written, `stateJson()` reports presence only, and the panel never routes a
   credential through `persistSettings()`.
+- **An imported profile can never make root run something.** The unsafe-
+  directive lists in the parser and in `bin/install-profile` must match
+  exactly, and the branch that records a removal may not also emit the line.
+- **The privileged helper never reads the caller's staging directory twice.**
+  `cmd_install` must copy with `cp -R --no-dereference` before it inspects
+  anything, and `$staging` may not be referenced after that copy.
 - **The kill switch stays fail-closed**: both chains `policy drop`, the `inet`
   family, the DNS drop above the LAN accept, the poll's maintenance never
   disarming, and nothing writing `/etc/nftables.conf`.

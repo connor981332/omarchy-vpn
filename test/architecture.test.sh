@@ -352,6 +352,66 @@ else
   check "the manual toggle is not gated by the election" 0
 fi
 
+echo "# the privilege boundary at import"
+
+# The two lists have to agree. The one in Config.js runs as the user, which
+# from root's point of view makes it input rather than a check; the one in
+# install-profile is the control. A directive added to one and forgotten in
+# the other is a bypass that no functional test would notice, because the
+# feature still works.
+js_unsafe="$(awk '/^var UNSAFE_DIRECTIVES = \{/,/^\}/' backends/openvpn/Config.js \
+  | grep -o '"[a-z0-9-]*":' | tr -d '":' | sort -u)"
+# Sourced, not parsed: the helper defines its functions and runs nothing when
+# it is not $0, so this reads the value the helper will actually use.
+sh_unsafe="$(bash -c 'source bin/install-profile; printf "%s\n" $OPENVPN_UNSAFE' | sort -u)"
+if [[ -n $js_unsafe && $js_unsafe == "$sh_unsafe" ]]; then
+  check "the parser and the helper refuse the same directives" 0
+else
+  check "the parser and the helper refuse the same directives" 1 \
+    "$(diff <(echo "$js_unsafe") <(echo "$sh_unsafe"))"
+fi
+
+# The whole point of removing them rather than warning: a warning leaves the
+# line in the file that root then reads.
+if awk '/^function plan\(/,/^\}/' backends/openvpn/Config.js \
+   | grep -q 'UNSAFE_DIRECTIVES.hasOwnProperty(line.key)'; then
+  if awk '/UNSAFE_DIRECTIVES.hasOwnProperty\(line.key\)/,/^    \}/' backends/openvpn/Config.js \
+     | grep -q 'out.push'; then
+    check "an unsafe directive never reaches the config" 1 \
+      "the branch that records a removal also emits the line"
+  else
+    check "an unsafe directive never reaches the config" 0
+  fi
+else
+  check "an unsafe directive never reaches the config" 1 "the branch is gone"
+fi
+
+# The check/use race. Everything cmd_install inspects has to be the root-owned
+# copy: a check against the caller's own directory is a check against something
+# that can change before the file is reopened.
+install_body="$(awk '/^cmd_install\(\) \{/,/^\}/' bin/install-profile)"
+code_only="$(grep -v '^[[:space:]]*#' <<< "$install_body")"
+cp_line="$(grep -n 'cp -R --no-dereference' <<< "$code_only" | head -1 | cut -d: -f1)"
+staging_last="$(grep -n '\$staging\b' <<< "$code_only" | tail -1 | cut -d: -f1)"
+if [[ -z $cp_line ]]; then
+  check "the staging directory is copied before it is read" 1 \
+    "cmd_install does not copy with --no-dereference"
+elif [[ -n $staging_last && $staging_last -gt $cp_line ]]; then
+  check "the staging directory is copied before it is read" 1 \
+    "cmd_install reads \$staging again after taking its own copy:
+$(sed -n "${staging_last}p" <<< "$code_only")"
+else
+  check "the staging directory is copied before it is read" 0
+fi
+
+# --no-dereference is what makes the copy safe rather than merely earlier:
+# without it, the copy itself follows a symlink and reads the file.
+if grep -q 'cp -R --no-dereference' bin/install-profile; then
+  check "the copy never follows a symlink" 0
+else
+  check "the copy never follows a symlink" 1 "$(grep -n 'cp -R' bin/install-profile)"
+fi
+
 echo "# no symlinks — plugin validation rejects them"
 links="$(find . -type l -not -path './.git/*' 2>/dev/null || true)"
 if [[ -z $links ]]; then
