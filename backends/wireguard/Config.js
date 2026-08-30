@@ -9,10 +9,15 @@
 //
 // Pure: no QML types, so `node test/wireguard-config.test.js` runs it directly.
 
-// Keys whose value is a shell command line rather than data. wg-quick runs
-// these with the interface up or down; they are not rewritten, for the same
-// reason the other backend does not rewrite a script hook — it lives wherever
-// it was installed.
+// Keys whose value is a shell command line rather than data. `wg-quick` runs
+// them through `eval`, as root, from `wg-quick@.service` — so in a profile
+// somebody downloaded they are the profile author's choice of what root does
+// the moment the tunnel comes up.
+//
+// They are REMOVED at import rather than warned about, for the reason set out
+// at UNSAFE_DIRECTIVES in the other backend, and bin/install-profile refuses
+// them a second time on the file it is about to install. The two lists have
+// to agree.
 var HOOK_KEYS = ["PreUp", "PostUp", "PreDown", "PostDown"]
 
 // ------------------------------------------------------------------- parsing
@@ -53,7 +58,9 @@ function parse(text) {
       current = { name: "", entries: [] }
       sections.push(current)
     }
-    current.entries.push({ key: key, value: value })
+    // The line number is what lets a hook be dropped from the emitted config
+    // while every other line survives byte-identical.
+    current.entries.push({ key: key, value: value, line: i })
   }
 
   return { text: raw, lines: lines, sections: sections }
@@ -149,7 +156,8 @@ function plan(text, opts) {
   var parsed = parse(text)
   var errors = validate(parsed)
   var warnings = []
-  var hookTargets = []
+  // Hook lines taken out, verbatim, for the panel to show.
+  var removed = []
   // Names of commands the profile will need at connect time. Just names: see
   // the DNS note below for why the advice is not here.
   var requiredCommands = []
@@ -192,22 +200,18 @@ function plan(text, opts) {
   }
 
   // Hooks, handled exactly as the other backend handles a script directive:
-  // never rewritten, warned about under /home, and otherwise handed to the
-  // caller to look for on the real filesystem.
+  // taken out of the config that gets installed, and reported verbatim.
+  var drop = {}
   for (var s = 0; s < (parsed.sections || []).length; s++) {
     var entries = parsed.sections[s].entries
     for (var e = 0; e < entries.length; e++) {
       if (!_isHookKey(entries[e].key)) continue
-      var target = _commandPath(entries[e].value)
-      if (target === "") continue
-      if (target.indexOf("/home/") === 0 || target.indexOf("~") === 0) {
-        warnings.push("`" + entries[e].key + "` runs `" + target + "`, which is in your "
-          + "home directory. Move it somewhere outside /home so the service can reach it.")
-      } else {
-        hookTargets.push(target)
-      }
+      drop[entries[e].line] = true
+      removed.push({ key: entries[e].key, reason: "run",
+                     raw: parsed.lines[entries[e].line].trim() })
     }
   }
+  if (removed.length > 0) warnings.push(_removalWarning(removed))
 
   return {
     name: name,
@@ -216,11 +220,13 @@ function plan(text, opts) {
     // WireGuard is UDP and only UDP — there is no configuration that changes
     // it, so the kill switch's endpoint rule never has to ask.
     endpointProto: "udp",
-    // Self-contained and left alone. Only the line endings are normalised, so
-    // a config written on Windows does not arrive with carriage returns.
-    content: parsed.text.replace(/\n+$/, "") + "\n",
+    // Self-contained apart from the hook lines: everything else survives
+    // byte-identical, and the line endings are normalised so a config written
+    // on Windows does not arrive with carriage returns.
+    content: _emit(parsed, drop),
     assets: [],
-    hookTargets: hookTargets,
+    // The lines that were taken out. The panel shows them; nothing installs them.
+    removed: removed,
     requiredCommands: requiredCommands,
     warnings: warnings,
     errors: errors
@@ -229,18 +235,31 @@ function plan(text, opts) {
 
 // ------------------------------------------------------------------ internals
 
+// Re-emits the file with the dropped line numbers left out. Everything else is
+// the line as it was written, so a user still recognises their own config.
+function _emit(parsed, drop) {
+  var out = []
+  for (var i = 0; i < parsed.lines.length; i++) {
+    if (drop[i]) continue
+    out.push(parsed.lines[i])
+  }
+  return out.join("\n").replace(/\n+$/, "") + "\n"
+}
+
+// Matches removalWarning() in the other backend. Named lines, not a count:
+// the user has to be able to take this to whoever wrote the profile.
+function _removalWarning(removed) {
+  var quoted = []
+  for (var i = 0; i < removed.length; i++) quoted.push("`" + removed[i].raw + "`")
+  var noun = removed.length === 1 ? "one line" : quoted.length + " lines"
+  return "Removed " + noun + " that would have run as root when the tunnel comes "
+    + "up: " + quoted.join(", ") + ". The tunnel itself is unaffected; only a "
+    + "profile relying on its own scripts for DNS or routing will notice."
+}
+
 function _isHookKey(key) {
   for (var i = 0; i < HOOK_KEYS.length; i++) {
     if (HOOK_KEYS[i].toLowerCase() === String(key).toLowerCase()) return true
   }
   return false
-}
-
-// A hook value is a shell command line, not a path. Only an absolute first
-// word can be checked against the filesystem; `wg set %i ...` and anything
-// resolved through PATH is left alone, because guessing wrong here would warn
-// about a profile that works.
-function _commandPath(value) {
-  var first = String(value || "").trim().split(/\s+/)[0] || ""
-  return first.charAt(0) === "/" ? first : ""
 }

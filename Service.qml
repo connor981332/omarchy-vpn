@@ -720,10 +720,6 @@ Item {
     for (var i = 0; i < plan.assets.length; i++) {
       command.push("--asset", plan.assets[i].source, plan.assets[i].target)
     }
-    // Hooks are not staged, only looked for. The helper runs as the user and
-    // can see the filesystem the pure config parser cannot.
-    var hooks = plan.hookTargets || []
-    for (var h = 0; h < hooks.length; h++) command.push("--hook", hooks[h])
     // Same look-before-installing, for a command resolved through PATH. The
     // backend supplies the name and the sentence; the service only asks.
     var checks = plan.requiredCommands || []
@@ -742,20 +738,15 @@ Item {
     importProcess.running = true
   }
 
-  // The staging helper reports a hook it could not find as `missing-hook: <p>`
-  // on stdout. Saying so here is the whole point: the profile is valid, so
-  // nothing else would object until the tunnel failed to come up.
-  function _warnAboutMissingHooks(output) {
+  // The staging helper reports a command the profile needs but that is not on
+  // PATH as `missing-command: <name>` on stdout. Saying so here is the whole
+  // point: the profile is valid, so nothing else would object until the tunnel
+  // failed to come up.
+  function _warnAboutMissingCommands(output) {
     var lines = String(output).split(/\r?\n/)
     var next = warnings.slice()
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim()
-      if (line.indexOf("missing-hook: ") === 0) {
-        var path = line.substring("missing-hook: ".length)
-        next.push("This profile runs `" + path + "`, which is not on this system. "
-          + "The tunnel will fail to start until whatever provides it is installed.")
-        continue
-      }
       if (line.indexOf("missing-command: ") !== 0) continue
       var found = requirementFor(_importProtocol, line.substring("missing-command: ".length))
       if (found) next.push(found.warning)
@@ -1328,7 +1319,7 @@ Item {
     }
     onExited: function(exitCode) {
       if (exitCode === 0) {
-        root._warnAboutMissingHooks(String(importOut.text || ""))
+        root._warnAboutMissingCommands(String(importOut.text || ""))
         root._installStaged()
       } else {
         root.actionStatus = ""

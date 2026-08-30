@@ -34,13 +34,47 @@ var FILE_DIRECTIVES = {
   "extra-certs": 0
 }
 
-// Directives that name an executable rather than a data file. These are NOT
-// rewritten — a hook lives wherever the user installed it — but one under
-// /home cannot work inside the unit, and saying so at import time is the
-// difference between a clear warning and a tunnel that mysteriously has no DNS.
-var SCRIPT_DIRECTIVES = ["up", "down", "route-up", "route-pre-down",
-                         "ipchange", "client-connect", "client-disconnect",
-                         "learn-address", "tls-verify", "auth-user-pass-verify"]
+// Directives an imported profile may not carry, and the reason each one is
+// refused. The unit runs `openvpn` as root — `openvpn-client@.service` sets no
+// `User=` — so every one of these is a way for the author of a downloaded
+// profile to choose what root does the moment the user starts the tunnel.
+//
+// They are REMOVED from the installed config, not warned about: a warning
+// leaves the line in place, and the user approving a polkit prompt labelled
+// "install a VPN profile" is not approving a root shell. bin/install-profile
+// enforces the same list a second time on the file it is about to install,
+// because everything up to that point runs as the user and is therefore
+// input, not a check.
+//
+//   run   — root executes the named command line (needs `script-security 2`,
+//           which is why arming it is on the list too)
+//   load  — root dlopen()s a shared object, needing no script-security at all
+//   arm   — turns the `run` directives on
+//   write — root writes a file at a path the profile chooses. ProtectSystem=
+//           true leaves /etc writable, so this reaches /etc/systemd/system.
+var UNSAFE_DIRECTIVES = {
+  "up": "run",
+  "down": "run",
+  "route-up": "run",
+  "route-pre-down": "run",
+  "ipchange": "run",
+  "client-connect": "run",
+  "client-disconnect": "run",
+  "learn-address": "run",
+  "tls-verify": "run",
+  "auth-user-pass-verify": "run",
+  "tls-crypt-v2-verify": "run",
+  "plugin": "load",
+  "script-security": "arm",
+  "log": "write",
+  "log-append": "write",
+  "status": "write",
+  "writepid": "write"
+}
+
+// Deliberately NOT on that list: `user`, `group` and `chroot` drop privilege
+// rather than take it, and stripping them would make an imported profile run
+// with more privilege than its author asked for.
 
 // Splits a config line the way OpenVPN's own parser does: whitespace-separated,
 // with double quotes grouping a value that contains spaces.
@@ -107,8 +141,13 @@ function parse(text) {
       continue
     }
 
+    // OpenVPN accepts a directive in a config file with or without the `--`
+    // it would carry on the command line, so `--up` and `up` are the same
+    // option and have to be the same key here. Missing this would leave the
+    // spelling that bypasses UNSAFE_DIRECTIVES.
     var tokens = tokenize(trimmed)
-    lines.push({ kind: "directive", raw: line, key: tokens[0], args: tokens.slice(1) })
+    var key = String(tokens[0] || "").replace(/^--/, "")
+    lines.push({ kind: "directive", raw: line, key: key, args: tokens.slice(1) })
   }
 
   // An unterminated block is a truncated file, not a config.
@@ -221,11 +260,9 @@ function plan(text, options) {
   var errors = validate(parsed)
   var warnings = []
   var assets = []
-  // Hook targets outside /home, for the caller to check against the real
-  // filesystem. A hook that points at a path which is simply not installed
-  // parses cleanly, imports cleanly, and only fails at connect time — and
-  // this file is pure, so it cannot look. See stage-profile's --hook.
-  var hookTargets = []
+  // Every UNSAFE_DIRECTIVES line taken out, verbatim, so the panel can show
+  // the user exactly what was dropped rather than a count.
+  var removed = []
   var seen = {}
   var needsCredentials = false
 
@@ -238,15 +275,8 @@ function plan(text, options) {
       continue
     }
 
-    if (SCRIPT_DIRECTIVES.indexOf(line.key) !== -1) {
-      var target = line.args[0] || ""
-      if (target.indexOf("/home/") === 0 || target.indexOf("~") === 0) {
-        warnings.push("`" + line.key + " " + target + "` points into your home directory, "
-          + "which the VPN service cannot read. Move the script somewhere outside /home.")
-      } else if (target.indexOf("/") === 0) {
-        hookTargets.push(target)
-      }
-      out.push(line.raw)
+    if (UNSAFE_DIRECTIVES.hasOwnProperty(line.key)) {
+      removed.push({ key: line.key, reason: UNSAFE_DIRECTIVES[line.key], raw: line.raw.trim() })
       continue
     }
 
@@ -281,6 +311,8 @@ function plan(text, options) {
     out.push(rewritten.join(" "))
   }
 
+  if (removed.length > 0) warnings.push(removalWarning(removed))
+
   return {
     name: name,
     protocol: "openvpn",
@@ -288,7 +320,8 @@ function plan(text, options) {
     endpointProto: endpointProto(parsed),
     content: out.join("\n").replace(/\n+$/, "") + "\n",
     assets: assets,
-    hookTargets: hookTargets,
+    // The lines that were taken out. The panel shows them; nothing installs them.
+    removed: removed,
     // True when the profile asks for a username and password interactively.
     // The caller has to collect them and hand them to the helper; until then
     // the profile is installed and will not start.
@@ -296,6 +329,19 @@ function plan(text, options) {
     warnings: warnings,
     errors: errors
   }
+}
+
+// One sentence for the whole set, naming the lines rather than counting them:
+// a profile that quietly loses its DNS hook and says only "1 line removed" is
+// a support question, and the user needs enough to go and ask their provider.
+function removalWarning(removed) {
+  var quoted = []
+  for (var i = 0; i < removed.length; i++) quoted.push("`" + removed[i].raw + "`")
+  var noun = removed.length === 1 ? "one line" : quoted.length + " lines"
+  return "Removed " + noun + " that would have let this profile run commands or "
+    + "write files as root when the tunnel starts: " + quoted.join(", ")
+    + ". The tunnel itself is unaffected; only a profile relying on its own "
+    + "scripts for DNS or routing will notice."
 }
 
 // `<name>.<directive>`, with a counter when one directive appears twice

@@ -183,6 +183,31 @@ designed deliberately rather than bolted on.
 
 ---
 
+## 7. Keeping a script hook you actually trust
+
+Import removes every directive that would let a profile run code or write files
+as root — see the import boundary in `ARCHITECTURE.md`. That is the right
+default for a downloaded profile, and it is the only safe default when the
+widget cannot tell a provider's file from one you wrote yourself.
+
+It does mean a user with a genuine hook of their own has nowhere to put it. The
+missing piece is a way to say "I wrote this line, keep it": the removed lines
+are already carried through the plan verbatim and shown in the panel, so the UI
+half is a confirmation on top of what is displayed today.
+
+The hard half is the privileged one. `bin/install-profile` refuses these
+directives outright, and it has to — its caller is unprivileged, so any flag
+saying "the user approved this" is a flag an attacker can also pass. Doing this
+properly means the approval has to be something the helper can verify itself,
+which is a polkit action of its own with its own prompt text, naming the
+command that will run as root.
+
+**Effort: a day, most of it on the polkit action and its wording.** Worth doing
+only once someone actually asks — on Arch the hooks commercial profiles carry
+are Debian scripts that were never installed here in the first place.
+
+---
+
 ## Not on this list
 
 Two capabilities are absent for the same reason as OTP and are worth naming so
