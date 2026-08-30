@@ -13,6 +13,17 @@ if ! command -v systemd-escape >/dev/null; then
   exit 0
 fi
 
+# Resolved by RUNNING a candidate, never by finding one. A bare `node` here is
+# the version-manager shim: present, executable, and exiting non-zero with an
+# empty stdout when no version is pinned. The loop below then reads zero lines,
+# compares nothing, and reports that all 15 names matched — which is what it
+# did until this was fixed.
+NODE="${NODE:-$("$ROOT/test/find-node.sh" || true)}"
+if [[ -z $NODE ]]; then
+  echo "not ok - no working node to run the escaper with"
+  exit 1
+fi
+
 NAMES=(
   "plain"
   "work:vpn"
@@ -32,19 +43,29 @@ NAMES=(
 )
 
 fail=0
+compared=0
 while IFS=$'\x1f' read -r name ours; do
   theirs="$(systemd-escape -- "$name")"
+  compared=$((compared + 1))
   if [[ $ours != "$theirs" ]]; then
     printf 'not ok - %-16s ours=%-24s systemd=%s\n' "$name" "$ours" "$theirs"
     fail=1
   else
     printf 'ok - %-16s -> %s\n' "$name" "$ours"
   fi
-done < <(node "$ROOT/test/escape-pin.js" "${NAMES[@]}")
+done < <("$NODE" "$ROOT/test/escape-pin.js" "${NAMES[@]}")
+
+# The count is itself an assertion. Every comparison here passes by matching,
+# so a run that produced no comparisons at all is indistinguishable from a
+# clean one unless the number is checked.
+if [[ $compared -ne ${#NAMES[@]} ]]; then
+  echo "not ok - ran: compared $compared names, expected ${#NAMES[@]}"
+  fail=1
+fi
 
 if [[ $fail -eq 0 ]]; then
-  echo "# escaping matches systemd-escape for ${#NAMES[@]} names"
+  echo "ok - ran: all ${#NAMES[@]} names compared against systemd-escape"
 else
-  echo "# escaping DIVERGES from systemd-escape"
+  echo "# escaping DIVERGES from systemd-escape, or did not run"
 fi
 exit $fail
